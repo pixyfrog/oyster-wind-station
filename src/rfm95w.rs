@@ -25,18 +25,5 @@ pub fn read_register_mock(register: u8) -> u8 {
     }
 }
 
-pub struct WindPacket {
-    pub node_id: u8,
-    pub wind_speed: u16,
-    pub battery_mv: u16,
-    pub sequence: u16,
-}
 
-pub fn read_packet_mock() -> WindPacket {
-    WindPacket {
-        node_id: 1,
-        wind_speed: 152,    // 15.2 m/s * 10
-        battery_mv: 3700,   // 3.7V in millivolts
-        sequence: 42,
-    }
-}
+
