@@ -37,17 +37,17 @@ pub fn crc8(data: &[u8]) -> u8 {
 }
 
 pub fn decode(buf: &[u8;9]) -> Option<WindPacket> {
-    if buf[0]==!0xAA {
+    if buf[0]!=0xAA {
         return None;
     }
 
     let crc = crc8(&buf[0..8]);
-    if crc == !buf[8] {
+    if crc != buf[8] {
         return None;
     }
 
     Some(WindPacket {
-        node_id: buf [1] as u8,
+        node_id: buf [1],
         wind_speed: (((buf[2] as u16) << 8) | (buf[3] as u16)),
         battery_mv: (((buf[4] as u16) << 8) | (buf[5] as u16)),
         sequence: (((buf[6] as u16) << 8) | (buf[7] as u16)),
