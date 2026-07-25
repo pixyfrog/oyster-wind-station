@@ -54,3 +54,46 @@ pub fn decode(buf: &[u8;9]) -> Option<WindPacket> {
     })
 
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip_preserves_all_field () {
+        let original = WindPacket {
+            node_id : 1,
+            wind_speed : 270,
+            battery_mv: 3200,
+            sequence: 42,
+        };
+    let encoded = encode(&original);
+    let decoded = decode(&encoded).expect("a valid packet must encode");
+    assert_eq!(decoded.node_id, original.node_id);
+    assert_eq!(decoded.wind_speed, original.wind_speed);
+    assert_eq!(decoded.battery_mv, original.battery_mv);
+    assert_eq!(decoded.sequence, original.sequence);
+    }
+
+    #[test]
+    fn reject_bad_magic () {
+        let mut buf = encode(&read_packet_mock());
+        buf[0] = 0x00;
+        buf[8] = crc8(&buf[0..8]); // keep the CRC valid — now ONLY the magic check can catch this
+        assert!(decode(&buf).is_none());
+    }
+
+    #[test]
+    fn reject_corrupted_data_byte () {
+        let mut buf = encode(&read_packet_mock());
+        buf[3]= buf[3].wrapping_add(1); // corrupt wind speed, CRC now stale
+        assert!(decode(&buf).is_none());
+    }
+
+    #[test]
+    fn reject_bad_crc () {
+        let mut buf = encode(&read_packet_mock());
+        buf[8] = buf[8].wrapping_add(1); // tamper with the CRC itself
+        assert!(decode(&buf).is_none());
+    }
+}
