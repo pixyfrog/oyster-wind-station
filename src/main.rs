@@ -1,6 +1,9 @@
 mod packet;
+mod rfm95w;
+
 
 use axum::{routing::get, Router, extract::State};
+
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -10,6 +13,10 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
+    match rfm95w::get_version() {
+        Ok(v) => println!("Radio version: 0x{:2X}", v),
+        Err(e) => println!("Radio error: {:?}", e),
+    }
     let state = AppState {
         packet: Arc::new(Mutex::new(None)),
     };
@@ -21,7 +28,7 @@ async fn main() {
             let mut packet = state_for_task.packet.lock().unwrap();
             *packet = Some(packet::WindPacket {
                 node_id: 1,
-                wind_speed: 152,
+                wind_speed: 177,
                 battery_mv: 3700,
                 sequence: 42,
             });
@@ -42,8 +49,8 @@ async fn main() {
 async fn handler(State(state): State<AppState>) -> String {
     let packet = state.packet.lock().unwrap();
     match *packet {
-        Some(ref p) => format!("Node: {}, Wind: {} (x0.1 m/s), Battery: {} mV, Seq: {}",
-            p.node_id, p.wind_speed, p.battery_mv, p.sequence),
-        None => "No packet received yet".to_string(),
+        Some(ref p) => format!("Node: {}, Wind: {} (m/s), Battery: {} mV, Seq: {}",
+            p.node_id, (p.wind_speed as f32) / 10.0, p.battery_mv, p.sequence),
+        None => "Station Starting up".to_string(),
     }
 }
