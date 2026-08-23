@@ -2,14 +2,14 @@
 Lora-based wind monitoring for kitesurfing community at Oyster Island, Kampot, Cambodia.
 
 ## Architecture
-- **Transmitter (Oyster Island):** Raspberry Pi Pico 2 + RFM95W LoRa + anemometer
+- **Transmitter (Oyster Island):** Raspberry Pi Pico (RP2040) + RFM95W LoRa + anemometer
 - **Receiver (Villa Vedici):** Orange Pi 3 LTS + RFM95W LoRa + web dashboard
 - **Link:** 10 km LoRa, 868 MHz, custom packet protocol
 
 ## Hardware
 | Component | Spec | Status |
 |-----------|------|--------|
-| Pico 2 RP2350 | USB-C, bare-metal Rust | Ordered |
+| Pico RP2040 ×2 | USB-C boards, bare-metal Rust | Ordered |
 | RFM95W 868 MHz | SX1276, spring antenna | Ordered |
 | Anemometer | NPN pulse output, 0-30 m/s | Ordered |
 | Orange Pi 3 LTS | Receiver, Armbian 26.5.1 | Ready |
