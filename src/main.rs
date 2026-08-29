@@ -3,7 +3,7 @@ mod rfm95w;
 
 
 use axum::{routing::get, Router, extract::State};
-
+use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -17,9 +17,13 @@ async fn main() {
         Ok(v) => println!("Radio version: 0x{:2X}", v),
         Err(e) => println!("Radio error: {:?}", e),
     }
+
+    std::thread::spawn(start_radio_rx_task);
+
     let state = AppState {
         packet: Arc::new(Mutex::new(None)),
     };
+
 
     let state_for_task = state.clone();
     tokio::spawn(async move {
@@ -53,4 +57,28 @@ async fn handler(State(state): State<AppState>) -> String {
             p.node_id, (p.wind_speed as f32) / 10.0, p.battery_mv, p.sequence),
         None => "Station Starting up".to_string(),
     }
+}
+
+fn start_radio_rx_task() {
+    match rfm95w::Radio::new_receiver() {
+        Ok(mut radio) => {
+            println!("Radio RX task started");
+
+            loop {
+                match radio.poll_receive(Duration::from_millis(1000)) {
+                    Ok(Some(bytes)) => {
+                        println!("RX {} bytes: {:02X?}", bytes.len(), bytes);
+                        println!("ASCII: {}", String::from_utf8_lossy(&bytes));
+                    }
+                    Ok(none)=>{}
+                    Err(e) => {
+                        println!("Radio RX error: {:?}", e);
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                }
+            }
+        }
+        Err(e)=> println!("Radio init error: {:?}", e),
+    }
+
 }
