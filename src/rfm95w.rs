@@ -97,8 +97,13 @@ impl Radio {
             let irq = self.read_register(REG_IRQ_FLAGS)?;
 
             if irq & IRQ_RX_DONE != 0 {
-                let crc_error = irq & IRQ_PAYLOAD_CRC_ERROR != 0;
-                let valid_header = irq & IRQ_VALID_HEADER != 0;
+                let crc_error = (irq & IRQ_PAYLOAD_CRC_ERROR) != 0;
+                let valid_header = (irq & IRQ_VALID_HEADER) != 0;
+                if crc_error {
+                println!("Dropping CRC-error packet irq=0x{:02X}", irq);
+                self.write_register(REG_IRQ_FLAGS, 0xFF)?;
+                continue;
+                }
                 let len = self.read_register(REG_RX_NB_BYTES)? as usize;
                 let current_addr = self.read_register(REG_FIFO_RX_CURRENT_ADDR)?;
                 self.write_register(REG_FIFO_ADDR_PTR, current_addr)?;

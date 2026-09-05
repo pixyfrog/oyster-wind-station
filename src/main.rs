@@ -18,27 +18,30 @@ async fn main() {
         Err(e) => println!("Radio error: {:?}", e),
     }
 
-    std::thread::spawn(start_radio_rx_task);
-
     let state = AppState {
         packet: Arc::new(Mutex::new(None)),
     };
+    
+    let state_for_radio = state.clone();
+    std::thread::spawn(move || start_radio_rx_task(state_for_radio));
 
 
-    let state_for_task = state.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-            let mut packet = state_for_task.packet.lock().unwrap();
-            *packet = Some(packet::WindPacket {
-                node_id: 1,
-                wind_speed: 177,
-                battery_mv: 3700,
-                sequence: 42,
-            });
-            println!("Packet updated");
-        }
-    });
+     // Mock packet task disabled while testing real reception.   
+
+    //let state_for_task = state.clone();
+    //tokio::spawn(async move {
+    //    loop {
+    //        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    //        let mut packet = state_for_task.packet.lock().unwrap();
+    //        *packet = Some(packet::WindPacket {
+    //            node_id: 1,
+    //            wind_speed: 177,
+    //            battery_mv: 3700,
+    //            sequence: 42,
+    //        });
+    //        println!("Packet updated");
+    //    }
+    //});
 
     let app = Router::new()
         .route("/", get(handler))
@@ -50,16 +53,11 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn handler(State(state): State<AppState>) -> String {
-    let packet = state.packet.lock().unwrap();
-    match *packet {
-        Some(ref p) => format!("Node: {}, Wind: {} (m/s), Battery: {} mV, Seq: {}",
-            p.node_id, (p.wind_speed as f32) / 10.0, p.battery_mv, p.sequence),
-        None => "Station Starting up".to_string(),
-    }
-}
 
-fn start_radio_rx_task() {
+
+
+
+fn start_radio_rx_task(state: AppState) {
     match rfm95w::Radio::new_receiver() {
         Ok(mut radio) => {
             println!("Radio RX task started");
@@ -68,7 +66,29 @@ fn start_radio_rx_task() {
                 match radio.poll_receive(Duration::from_millis(1000)) {
                     Ok(Some(bytes)) => {
                         println!("RX {} bytes: {:02X?}", bytes.len(), bytes);
-                        println!("ASCII: {}", String::from_utf8_lossy(&bytes));
+                        if bytes.len() == 9 {
+                            let mut raw = [0u8; 9];
+                            raw.copy_from_slice (&bytes);
+                        
+                        match packet::decode(&raw) {
+                            Some(p) => {
+                                println!(
+                                    "DECODED node = {}, wind = {:.1}, battery = {}, sequence = {}",
+                                    p.node_id,
+                                    (p.wind_speed as f32) / 10.0,
+                                    p.battery_mv,
+                                    p.sequence
+                                );
+                                let mut shared = state.packet.lock().unwrap();
+                                *shared = Some (p);
+                            }
+                            none => {
+                                println!("Packet rejected by magic/crc");
+                            }
+                        }
+                        } else { 
+                        println!("Ignoring packet with unexpected lenght");
+                        }
                     }
                     Ok(none)=>{}
                     Err(e) => {
@@ -81,4 +101,17 @@ fn start_radio_rx_task() {
         Err(e)=> println!("Radio init error: {:?}", e),
     }
 
+}
+
+async fn handler(State(state): State<AppState>) -> String {
+    let packet = state.packet.lock().unwrap();
+    match *packet {
+        Some(ref p) => format!(
+            "Node: {}, Wind: {} (m/s), Battery: {} mV, Seq: {}",
+            p.node_id, 
+            (p.wind_speed as f32) / 10.0, 
+            p.battery_mv, 
+            p.sequence),
+        None => "Station Starting up".to_string(),
+    }
 }
