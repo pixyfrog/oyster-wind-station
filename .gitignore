@@ -1,4 +1,4 @@
-/target/
+target/
 .vscode/
 .idea/
 *.swp
@@ -12,3 +12,4 @@ Thumbs.db
 logs/
 *.bak
 *.orig
+JOURNAL.md

@@ -1,0 +1,19 @@
+[package]
+edition = "2021"
+name = "oyster-pico-tx"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+embedded-hal = "1.0.0"
+panic-halt = "1"
+rp-pico = "0.9"
+usb-device = "0.3"
+usbd-serial = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+debug = false
