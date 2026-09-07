@@ -193,5 +193,6 @@ void updateDisplay() {
     display.print(",");
     display.println(gps.location.lng(), 4);
   }
+  display.print("batt "); display.print(PMU.getBattVoltage()); display.println(" mV");
   display.display();
 }
