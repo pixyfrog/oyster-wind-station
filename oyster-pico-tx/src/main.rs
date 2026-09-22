@@ -88,7 +88,7 @@ fn main() -> ! {
     let mut cs = pins.gpio17.into_push_pull_output();
     let mut rst = pins.gpio20.into_push_pull_output();
     // ---- anemometer pulse input ----
-    let mut anemometer = pins.gpio21.into_pull_up_input();
+    let mut anemometer = pins.gpio22.into_pull_up_input();
 
     // ---- USB serial ----
     let usb_bus = UsbBusAllocator::new(bsp::hal::usb::UsbBus::new(
