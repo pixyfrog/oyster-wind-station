@@ -15,7 +15,7 @@ use bsp::hal::{
     watchdog::Watchdog,
 };
 
-use embedded_hal::digital::OutputPin;
+use embedded_hal::digital::{InputPin,OutputPin};
 use embedded_hal::spi::SpiBus;
 
 use usb_device::{class_prelude::*, prelude::*};
@@ -87,6 +87,8 @@ fn main() -> ! {
 
     let mut cs = pins.gpio17.into_push_pull_output();
     let mut rst = pins.gpio20.into_push_pull_output();
+    // ---- anemometer pulse input ----
+    let mut anemometer = pins.gpio21.into_pull_up_input();
 
     // ---- USB serial ----
     let usb_bus = UsbBusAllocator::new(bsp::hal::usb::UsbBus::new(
@@ -119,6 +121,7 @@ fn main() -> ! {
             let packet = build_packet(177, 3700, sequence); // 17.7 m/s, 3700 mV
             radio_send(&mut spi, &mut cs, &mut delay, &packet);
             print_u16(&mut serial, b"TX seq=", sequence);
+            print_u16(&mut serial, b"anem=", pulse_level(&mut anemometer));
             sequence = sequence.wrapping_add(1);
         }
 
@@ -137,6 +140,9 @@ fn write_register(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin, address: u
     cs.set_low().unwrap();
     let _ = spi.transfer_in_place(&mut buf);
     cs.set_high().unwrap();
+}
+fn pulse_level(pin: &mut impl InputPin) -> u16 {
+    if pin.is_high().unwrap() {1} else {0} 
 }
 
 fn read_register(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin, address: u8) -> u8 {
