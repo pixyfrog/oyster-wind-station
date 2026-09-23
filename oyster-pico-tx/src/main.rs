@@ -21,7 +21,7 @@ use embedded_hal::spi::SpiBus;
 use usb_device::{class_prelude::*, prelude::*};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
-// ---------------- SX1276 registers we use ---------------git commit -m "Pico: count anemometer pulses over a timed gate"-
+// ---------------- SX1276 registers we use ---------------
 const K_CM_PER_PULSE: u32 = 240; // placeholder - calibrate on site
 const REG_OP_MODE: u8 = 0x01;
 const REG_FRF_MSB: u8 = 0x06;
@@ -113,6 +113,7 @@ fn main() -> ! {
     radio_init_tx(&mut spi, &mut cs);
 
     let mut sequence: u16 = 0;
+    let mut window = Window::new();
     loop {
         usb_dev.poll(&mut [&mut serial]);
 
@@ -125,7 +126,13 @@ fn main() -> ! {
         print_u16(&mut serial, b"pulses=", pulses as u16);
         
         let speed = speed_cms(pulses, 3000);
+        window.push(speed);
+        let (avg,gust,lull) = window.finish();
+        print_u16 (&mut serial, b"avg=", avg as u16);
+        print_u16 (&mut serial, b"gust=", gust as u16);
+        print_u16(&mut serial, b"lull=", lull as u16);
         print_u16 (&mut serial, b"speed_cms=", speed as u16);
+
 
         let packet = build_packet((speed / 10) as u16, 3700, sequence);
         radio_send(&mut spi, &mut cs, &mut delay, &packet);
@@ -186,6 +193,45 @@ fn speed_cms(pulses: u32, window_ms: u32) -> u32 {
     }
     (pulses * K_CM_PER_PULSE) / window_s
 }
+//One measurement window, hold the numbers has subsample arrives
+struct Window {
+    sum_cms: u32,
+    sample: u32 ,
+    gust_cms: Option<u32>,
+    lull_cms: Option<u32>,
+}
+
+impl Window {
+    fn new() -> Self {
+        Window {
+        sum_cms : 0,
+        sample : 0,
+        gust_cms : None,
+        lull_cms : None,
+    }
+    }
+    fn push(&mut self, speed_cms: u32) {
+        self.sum_cms += speed_cms;
+        self.sample += 1;
+
+        if self.gust_cms.is_none() || speed_cms > self.gust_cms.unwrap() {
+            self.gust_cms = Some(speed_cms);
+        }
+        if self.lull_cms.is_none() || speed_cms < self.lull_cms.unwrap() {
+            self.lull_cms = Some(speed_cms);
+        }
+    } 
+
+    // return average, gust, lull, all in cms 
+    fn finish(&self) -> (u32, u32, u32) {
+        (
+            if self.sample == 0 {0} else {self.sum_cms/self.sample},
+            self.gust_cms.unwrap_or(0),
+            self.lull_cms.unwrap_or(0),
+            )
+    }
+}
+
 // Burst write to the FIFO: CS stays low across address byte + all data bytes.
 fn write_fifo(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin, data: &[u8]) {
     cs.set_low().unwrap();
