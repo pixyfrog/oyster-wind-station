@@ -15,7 +15,7 @@ use bsp::hal::{
     watchdog::Watchdog,
 };
 
-use embedded_hal::digital::{InputPin,OutputPin};
+use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::SpiBus;
 
 use usb_device::{class_prelude::*, prelude::*};
@@ -112,22 +112,23 @@ fn main() -> ! {
     radio_init_tx(&mut spi, &mut cs);
 
     let mut sequence: u16 = 0;
-    let mut counter: u32 = 0;
     loop {
         usb_dev.poll(&mut [&mut serial]);
 
-        if counter % 200 == 0 {
-            // every ~2 seconds: fixed test values, incrementing sequence
-            let packet = build_packet(177, 3700, sequence); // 17.7 m/s, 3700 mV
-            radio_send(&mut spi, &mut cs, &mut delay, &packet);
-            print_u16(&mut serial, b"TX seq=", sequence);
-            print_u16(&mut serial, b"anem=", pulse_level(&mut anemometer));
-            sequence = sequence.wrapping_add(1);
+        // Measure for 3 seconds, then report.
+        let mut pulses: u32 =0;
+        for _ in 0..300{
+            usb_dev.poll(&mut [&mut serial]);
+            pulses += count_pulses_for(&mut anemometer, &mut delay, 10);
         }
+        print_u16(&mut serial, b"pulses=", pulses as u16);
 
-        counter = counter.wrapping_add(1);
-        delay.delay_ms(10);
+        let packet = build_packet(177, 3700, sequence);
+        radio_send(&mut spi, &mut cs, &mut delay, &packet);
+            print_u16(&mut serial, b"TX seq=", sequence);
+        sequence = sequence.wrapping_add(1);
     }
+
 }
 
 // ---------------- radio drivers ----------------
@@ -152,7 +153,28 @@ fn read_register(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin, address: u8
     cs.set_high().unwrap();
     buf[1]
 }
+// whatch teh pulse line for 'gate_ms' millseconds and count falling edges.
+ // The line stays HIGH through the pull-up; each pulse pulls it LOW; so a 
+ // HIGH -> LOW change is one pulse.
+fn count_pulses_for(
+    pin: &mut impl InputPin,
+    delay: &mut cortex_m::delay::Delay,
+    gate_ms: u32,
+) -> u32 {
+    let mut previous = pin.is_high().unwrap();
+    let mut pulses: u32 = 0;
 
+    for _ in 0..gate_ms {
+        delay.delay_ms(1);
+        let now = pin.is_high().unwrap();
+        if previous && !now {
+            pulses += 1;
+        }
+        previous = now;
+    }
+
+    pulses
+}
 // Burst write to the FIFO: CS stays low across address byte + all data bytes.
 fn write_fifo(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin, data: &[u8]) {
     cs.set_low().unwrap();
@@ -191,14 +213,13 @@ fn radio_send(
     write_register(spi, cs, REG_PAYLOAD_LENGTH, payload.len() as u8);
     write_fifo(spi, cs, payload);
     write_register(spi, cs, REG_OP_MODE, MODE_TX);    // airtime at SF7/125kHz ≈ 40 ms
-
-    loop {
-        // poll until the chip says TxDone
+    for _ in 0..100 {
         if read_register(spi, cs, REG_IRQ_FLAGS) & IRQ_TX_DONE != 0 {
             break;
         }
         delay.delay_ms(1);
     }
+
     write_register(spi, cs, REG_IRQ_FLAGS, 0xFF);     // clear all IRQ flags
     write_register(spi, cs, REG_OP_MODE, MODE_SLEEP); // radio naps between packets
 }
