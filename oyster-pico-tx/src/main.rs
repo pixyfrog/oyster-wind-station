@@ -127,7 +127,7 @@ fn main() -> ! {
         let speed = speed_cms(pulses, 3000);
         print_u16 (&mut serial, b"speed_cms=", speed as u16);
 
-        let packet = build_packet(177, 3700, sequence);
+        let packet = build_packet((speed / 10) as u16, 3700, sequence);
         radio_send(&mut spi, &mut cs, &mut delay, &packet);
             print_u16(&mut serial, b"TX seq=", sequence);
         sequence = sequence.wrapping_add(1);
