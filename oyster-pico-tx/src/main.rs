@@ -21,7 +21,8 @@ use embedded_hal::spi::SpiBus;
 use usb_device::{class_prelude::*, prelude::*};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
-// ---------------- SX1276 registers we use ----------------
+// ---------------- SX1276 registers we use ---------------git commit -m "Pico: count anemometer pulses over a timed gate"-
+const K_CM_PER_PULSE: u32 = 240; // placeholder - calibrate on site
 const REG_OP_MODE: u8 = 0x01;
 const REG_FRF_MSB: u8 = 0x06;
 const REG_FRF_MID: u8 = 0x07;
@@ -122,6 +123,9 @@ fn main() -> ! {
             pulses += count_pulses_for(&mut anemometer, &mut delay, 10);
         }
         print_u16(&mut serial, b"pulses=", pulses as u16);
+        
+        let speed = speed_cms(pulses, 3000);
+        print_u16 (&mut serial, b"speed_cms=", speed as u16);
 
         let packet = build_packet(177, 3700, sequence);
         radio_send(&mut spi, &mut cs, &mut delay, &packet);
@@ -174,6 +178,13 @@ fn count_pulses_for(
     }
 
     pulses
+}
+fn speed_cms(pulses: u32, window_ms: u32) -> u32 {
+    let window_s = window_ms / 1000;
+    if window_s == 0 {
+        return 0;
+    }
+    (pulses * K_CM_PER_PULSE) / window_s
 }
 // Burst write to the FIFO: CS stays low across address byte + all data bytes.
 fn write_fifo(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin, data: &[u8]) {
