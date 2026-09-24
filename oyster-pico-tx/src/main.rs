@@ -22,6 +22,7 @@ use usb_device::{class_prelude::*, prelude::*};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
 // ---------------- SX1276 registers we use ---------------
+const SUB_SAMPLES_PER_WINDOW: u32 = 6; // — 6 for bench, 200 for real (600 s / 3 s)
 const K_CM_PER_PULSE: u32 = 240; // placeholder - calibrate on site
 const REG_OP_MODE: u8 = 0x01;
 const REG_FRF_MSB: u8 = 0x06;
@@ -49,7 +50,7 @@ const IRQ_TX_DONE: u8 = 0x08;
 fn main() -> ! {
     let mut pac = pac::Peripherals::take().unwrap();
     let core = pac::CorePeripherals::take().unwrap();
-
+    
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let clocks = init_clocks_and_plls(
         rp_pico::XOSC_CRYSTAL_FREQ,
@@ -114,6 +115,7 @@ fn main() -> ! {
 
     let mut sequence: u16 = 0;
     let mut window = Window::new();
+    let mut sub_samples: u32 = 0;
     loop {
         usb_dev.poll(&mut [&mut serial]);
 
@@ -127,17 +129,23 @@ fn main() -> ! {
         
         let speed = speed_cms(pulses, 3000);
         window.push(speed);
-        let (avg,gust,lull) = window.finish();
-        print_u16 (&mut serial, b"avg=", avg as u16);
-        print_u16 (&mut serial, b"gust=", gust as u16);
-        print_u16(&mut serial, b"lull=", lull as u16);
-        print_u16 (&mut serial, b"speed_cms=", speed as u16);
-
-
-        let packet = build_packet((speed / 10) as u16, 3700, sequence);
-        radio_send(&mut spi, &mut cs, &mut delay, &packet);
+        sub_samples += 1;
+        print_u16(&mut serial,b"speed_cms=", speed as u16);
+        if sub_samples >= SUB_SAMPLES_PER_WINDOW {
+            let (avg, gust, lull) = window.finish();         
+            print_u16(&mut serial, b"avg=", avg as u16);
+            print_u16(&mut serial, b"gust=", gust as u16);
+            print_u16(&mut serial, b"lull=", lull as u16);
+            print_u16(&mut serial, b"speed_cms=", speed as u16);
+        
+            let packet = build_packet((speed / 10) as u16, 3700, sequence);
+            radio_send(&mut spi, &mut cs, &mut delay, &packet);
             print_u16(&mut serial, b"TX seq=", sequence);
-        sequence = sequence.wrapping_add(1);
+            sequence = sequence.wrapping_add(1);
+
+            window = Window::new();
+            sub_samples = 0;
+        }
     }
 
 }
