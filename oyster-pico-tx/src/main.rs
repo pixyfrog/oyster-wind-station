@@ -15,13 +15,17 @@ use bsp::hal::{
     watchdog::Watchdog,
 };
 
-use embedded_hal::digital::OutputPin;
+use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::SpiBus;
 
 use usb_device::{class_prelude::*, prelude::*};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
-// ---------------- SX1276 registers we use ----------------
+// ---------------- SX1276 registers we use ---------------
+const PACKET_VERSION: u8 = 0x02;
+const SUB_SAMPLES_PER_WINDOW: u32 = 6; // — 6 for bench, 200 for real (600 s / 3 s)
+const WINDOW_S: u16 = (SUB_SAMPLES_PER_WINDOW * 3) as u16; // 3s per sub_sample
+const K_CM_PER_PULSE: u32 = 240; // placeholder - calibrate on site
 const REG_OP_MODE: u8 = 0x01;
 const REG_FRF_MSB: u8 = 0x06;
 const REG_FRF_MID: u8 = 0x07;
@@ -48,7 +52,7 @@ const IRQ_TX_DONE: u8 = 0x08;
 fn main() -> ! {
     let mut pac = pac::Peripherals::take().unwrap();
     let core = pac::CorePeripherals::take().unwrap();
-
+    
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let clocks = init_clocks_and_plls(
         rp_pico::XOSC_CRYSTAL_FREQ,
@@ -87,6 +91,8 @@ fn main() -> ! {
 
     let mut cs = pins.gpio17.into_push_pull_output();
     let mut rst = pins.gpio20.into_push_pull_output();
+    // ---- anemometer pulse input ----
+    let mut anemometer = pins.gpio22.into_pull_up_input();
 
     // ---- USB serial ----
     let usb_bus = UsbBusAllocator::new(bsp::hal::usb::UsbBus::new(
@@ -110,21 +116,46 @@ fn main() -> ! {
     radio_init_tx(&mut spi, &mut cs);
 
     let mut sequence: u16 = 0;
-    let mut counter: u32 = 0;
+    let mut window = Window::new();
+    let mut sub_samples: u32 = 0;
     loop {
         usb_dev.poll(&mut [&mut serial]);
 
-        if counter % 200 == 0 {
-            // every ~2 seconds: fixed test values, incrementing sequence
-            let packet = build_packet(177, 3700, sequence); // 17.7 m/s, 3700 mV
+        // Measure for 3 seconds, then report.
+        let mut pulses: u32 =0;
+        for _ in 0..300{
+            usb_dev.poll(&mut [&mut serial]);
+            pulses += count_pulses_for(&mut anemometer, &mut delay, 10);
+        }
+        print_u16(&mut serial, b"pulses=", pulses as u16);
+        
+        let speed = speed_cms(pulses, 3000);
+        window.push(speed);
+        sub_samples += 1;
+        print_u16(&mut serial,b"speed_cms=", speed as u16);
+        if sub_samples >= SUB_SAMPLES_PER_WINDOW {
+            let (avg, gust, lull) = window.finish();         
+            print_u16(&mut serial, b"avg=", avg as u16);
+            print_u16(&mut serial, b"gust=", gust as u16);
+            print_u16(&mut serial, b"lull=", lull as u16);
+            print_u16(&mut serial, b"speed_cms=", speed as u16);
+        
+            let packet = build_packet(
+                (avg / 10) as u16,
+                (gust / 10) as u16,
+                (lull / 10) as u16,
+                3700,
+                sequence,
+            );
             radio_send(&mut spi, &mut cs, &mut delay, &packet);
             print_u16(&mut serial, b"TX seq=", sequence);
             sequence = sequence.wrapping_add(1);
-        }
 
-        counter = counter.wrapping_add(1);
-        delay.delay_ms(10);
+            window = Window::new();
+            sub_samples = 0;
+        }
     }
+
 }
 
 // ---------------- radio drivers ----------------
@@ -138,6 +169,9 @@ fn write_register(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin, address: u
     let _ = spi.transfer_in_place(&mut buf);
     cs.set_high().unwrap();
 }
+fn pulse_level(pin: &mut impl InputPin) -> u16 {
+    if pin.is_high().unwrap() {1} else {0} 
+}
 
 fn read_register(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin, address: u8) -> u8 {
     let mut buf = [address & 0x7F, 0x00]; // MSB clear = read
@@ -145,6 +179,73 @@ fn read_register(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin, address: u8
     let _ = spi.transfer_in_place(&mut buf);
     cs.set_high().unwrap();
     buf[1]
+}
+// whatch teh pulse line for 'gate_ms' millseconds and count falling edges.
+ // The line stays HIGH through the pull-up; each pulse pulls it LOW; so a 
+ // HIGH -> LOW change is one pulse.
+fn count_pulses_for(
+    pin: &mut impl InputPin,
+    delay: &mut cortex_m::delay::Delay,
+    gate_ms: u32,
+) -> u32 {
+    let mut previous = pin.is_high().unwrap();
+    let mut pulses: u32 = 0;
+
+    for _ in 0..gate_ms {
+        delay.delay_ms(1);
+        let now = pin.is_high().unwrap();
+        if previous && !now {
+            pulses += 1;
+        }
+        previous = now;
+    }
+
+    pulses
+}
+fn speed_cms(pulses: u32, window_ms: u32) -> u32 {
+    let window_s = window_ms / 1000;
+    if window_s == 0 {
+        return 0;
+    }
+    (pulses * K_CM_PER_PULSE) / window_s
+}
+//One measurement window, hold the numbers has subsample arrives
+struct Window {
+    sum_cms: u32,
+    sample: u32 ,
+    gust_cms: Option<u32>,
+    lull_cms: Option<u32>,
+}
+
+impl Window {
+    fn new() -> Self {
+        Window {
+        sum_cms : 0,
+        sample : 0,
+        gust_cms : None,
+        lull_cms : None,
+    }
+    }
+    fn push(&mut self, speed_cms: u32) {
+        self.sum_cms += speed_cms;
+        self.sample += 1;
+
+        if self.gust_cms.is_none() || speed_cms > self.gust_cms.unwrap() {
+            self.gust_cms = Some(speed_cms);
+        }
+        if self.lull_cms.is_none() || speed_cms < self.lull_cms.unwrap() {
+            self.lull_cms = Some(speed_cms);
+        }
+    } 
+
+    // return average, gust, lull, all in cms 
+    fn finish(&self) -> (u32, u32, u32) {
+        (
+            if self.sample == 0 {0} else {self.sum_cms/self.sample},
+            self.gust_cms.unwrap_or(0),
+            self.lull_cms.unwrap_or(0),
+            )
+    }
 }
 
 // Burst write to the FIFO: CS stays low across address byte + all data bytes.
@@ -185,14 +286,13 @@ fn radio_send(
     write_register(spi, cs, REG_PAYLOAD_LENGTH, payload.len() as u8);
     write_fifo(spi, cs, payload);
     write_register(spi, cs, REG_OP_MODE, MODE_TX);    // airtime at SF7/125kHz ≈ 40 ms
-
-    loop {
-        // poll until the chip says TxDone
+    for _ in 0..100 {
         if read_register(spi, cs, REG_IRQ_FLAGS) & IRQ_TX_DONE != 0 {
             break;
         }
         delay.delay_ms(1);
     }
+
     write_register(spi, cs, REG_IRQ_FLAGS, 0xFF);     // clear all IRQ flags
     write_register(spi, cs, REG_OP_MODE, MODE_SLEEP); // radio naps between packets
 }
@@ -206,20 +306,36 @@ fn crc8_sum(data: &[u8]) -> u8 {
     }
     crc
 }
-
-fn build_packet(wind_speed: u16, battery_mv: u16, sequence: u16) -> [u8; 9] {
-    let mut p = [0u8; 9];
-    p[0] = 0xAA;                          // magic
-    p[1] = 1;                             // node_id
-    p[2] = (wind_speed >> 8) as u8;       // big-endian, like packet.rs
-    p[3] = (wind_speed & 0xFF) as u8;
-    p[4] = (battery_mv >> 8) as u8;
-    p[5] = (battery_mv & 0xFF) as u8;
-    p[6] = (sequence >> 8) as u8;
-    p[7] = (sequence & 0xFF) as u8;
-    p[8] = crc8_sum(&p[0..8]);            // CRC over the first 8 bytes
+fn build_packet(
+    avg_01: u16,
+    gust_01: u16,
+    lull_01: u16,
+    battery_mv: u16,
+    sequence: u16,
+    ) -> [u8; 18]{
+    let mut p = [0u8; 18];
+    p[0] = 0xAA;            // magic
+    p[1] = PACKET_VERSION;  // 0x02
+    p[2] = 1;               // node id
+    p[3] = 0;               // flags (unused for now)
+    p[3] = (avg_01 >> 8) as u8; // wind_avg, big-endian
+    p[4] = (avg_01 & 0xFF) as u8;
+    p[5] = (gust_01 >> 8) as u8;
+    p[6] = (gust_01 >> 8) as u8;
+    p[7] = (gust_01 & 0xFF) as u8;
+    p[8] = (lull_01 >> 8) as u8;
+    p[9] = (lull_01 & 0xFF) as u8;
+    p[10] = (battery_mv >> 8) as u8;
+    p[11] = (battery_mv & 0xFF) as u8;
+    p[12] = (sequence >> 8) as u8;
+    p[13] = (sequence & 0xFF) as u8;
+    p[14] = (WINDOW_S >> 8) as u8;
+    p[15] = (WINDOW_S & 0xFF) as u8;
+    p[16] = SUB_SAMPLES_PER_WINDOW as u8;
+    p[17] = crc8_sum(&p[0..17]);
     p
 }
+
 
 // ---------------- serial printing helpers ----------------
 

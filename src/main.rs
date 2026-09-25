@@ -53,10 +53,6 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-
-
-
-
 fn start_radio_rx_task(state: AppState) {
     match rfm95w::Radio::new_receiver() {
         Ok(mut radio) => {
@@ -66,31 +62,54 @@ fn start_radio_rx_task(state: AppState) {
                 match radio.poll_receive(Duration::from_millis(1000)) {
                     Ok(Some(bytes)) => {
                         println!("RX {} bytes: {:02X?}", bytes.len(), bytes);
-                        if bytes.len() == 9 {
-                            let mut raw = [0u8; 9];
-                            raw.copy_from_slice (&bytes);
-                        
-                        match packet::decode(&raw) {
-                            Some(p) => {
-                                println!(
-                                    "DECODED node = {}, wind = {:.1}, battery = {}, sequence = {}",
-                                    p.node_id,
-                                    (p.wind_speed as f32) / 10.0,
-                                    p.battery_mv,
-                                    p.sequence
-                                );
-                                let mut shared = state.packet.lock().unwrap();
-                                *shared = Some (p);
+
+                        match bytes.len() {
+                            9 => {
+                                let mut raw = [0u8; 9];
+                                raw.copy_from_slice(&bytes);
+
+                                match packet::decode(&raw) {
+                                    Some(p) => {
+                                        println!(
+                                            "DECODED node = {}, wind = {:.1}, battery = {}, sequence = {}",
+                                            p.node_id,
+                                            (p.wind_speed as f32) / 10.0,
+                                            p.battery_mv,
+                                            p.sequence
+                                        );
+                                        let mut shared = state.packet.lock().unwrap();
+                                        *shared = Some(p);
+                                    }
+                                    None => println!("Packet rejected by magic/crc"),
+                                }
                             }
-                            none => {
-                                println!("Packet rejected by magic/crc");
+                            18 => {
+                                let mut raw = [0u8; 18];
+                                raw.copy_from_slice(&bytes);
+
+                                match packet::decode_v2(&raw) {
+                                    Some(p) => {
+                                        println!(
+                                            "DECODED v2 avg = {:.1}, gust = {:.1}, lull = {:.1}",
+                                            (p.wind_avg as f32) / 10.0,
+                                            (p.wind_gust as f32) / 10.0,
+                                            (p.wind_lull as f32) / 10.0
+                                        );
+                                        let mut shared = state.packet.lock().unwrap();
+                                        *shared = Some(packet::WindPacket {
+                                            node_id: p.node_id,
+                                            wind_speed: p.wind_avg,
+                                            battery_mv: p.battery_mv,
+                                            sequence: p.sequence,
+                                        });
+                                    }
+                                    None => println!("v2 rejected by magic/version/crc"),
+                                }
                             }
-                        }
-                        } else { 
-                        println!("Ignoring packet with unexpected lenght");
+                            n => println!("Unexpected length: {}", n),
                         }
                     }
-                    Ok(none)=>{}
+                    Ok(None) => {}
                     Err(e) => {
                         println!("Radio RX error: {:?}", e);
                         std::thread::sleep(Duration::from_millis(500));
@@ -98,10 +117,11 @@ fn start_radio_rx_task(state: AppState) {
                 }
             }
         }
-        Err(e)=> println!("Radio init error: {:?}", e),
+        Err(e) => println!("Radio init error: {:?}", e),
     }
+}   
 
-}
+
 
 async fn handler(State(state): State<AppState>) -> String {
     let packet = state.packet.lock().unwrap();
