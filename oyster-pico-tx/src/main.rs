@@ -22,10 +22,13 @@ use usb_device::{class_prelude::*, prelude::*};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
 // ---------------- SX1276 registers we use ---------------
+const REG_A_DAC: u8 = 0x4D;
 const PACKET_VERSION: u8 = 0x02;
 const SUB_SAMPLES_PER_WINDOW: u32 = 6; // — 6 for bench, 200 for real (600 s / 3 s)
 const WINDOW_S: u16 = (SUB_SAMPLES_PER_WINDOW * 3) as u16; // 3s per sub_sample
-const K_CM_PER_PULSE: u32 = 240; // placeholder - calibrate on site
+const K_CM_PER_PULSE: u32 = 5; // placeholder - calibrate on site
+const LORA_SF: u8 = 9; // frozen range is 7 .. 9
+const LORA_MODEM_CONFIG2: u8 = (LORA_SF << 4 ) | 0x04;  //SF in bit 7..4, paylod CRC on
 const REG_OP_MODE: u8 = 0x01;
 const REG_FRF_MSB: u8 = 0x06;
 const REG_FRF_MID: u8 = 0x07;
@@ -169,9 +172,6 @@ fn write_register(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin, address: u
     let _ = spi.transfer_in_place(&mut buf);
     cs.set_high().unwrap();
 }
-fn pulse_level(pin: &mut impl InputPin) -> u16 {
-    if pin.is_high().unwrap() {1} else {0} 
-}
 
 fn read_register(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin, address: u8) -> u8 {
     let mut buf = [address & 0x7F, 0x00]; // MSB clear = read
@@ -264,14 +264,14 @@ fn radio_init_tx(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin) {
     write_register(spi, cs, REG_FRF_LSB, 0x00);
 
     write_register(spi, cs, REG_MODEM_CONFIG1, 0x72); // BW 125 kHz, CR 4/5, explicit header
-    write_register(spi, cs, REG_MODEM_CONFIG2, 0x74); // SF7, payload CRC on
+    write_register(spi, cs, REG_MODEM_CONFIG2, LORA_MODEM_CONFIG2); // SF9, payload CRC on
     write_register(spi, cs, REG_MODEM_CONFIG3, 0x04); // AGC auto
     write_register(spi, cs, REG_PREAMBLE_MSB, 0x00);
     write_register(spi, cs, REG_PREAMBLE_LSB, 0x08);  // preamble = 8 symbols
     write_register(spi, cs, REG_SYNC_WORD, 0x12);
     write_register(spi, cs, REG_FIFO_TX_BASE, 0x00);
-    write_register(spi, cs, REG_PA_CONFIG, 0x8F);     // PA_BOOST, modest ~11 dBm for bench tests
-
+    write_register(spi, cs, REG_A_DAC, 0x87); // enable teh +20 dBfm PAG_BOOST mode
+    write_register(spi, cs, REG_PA_CONFIG, 0xFF);  // PA_BOOST, ceiling 7, trim 15
     write_register(spi, cs, REG_OP_MODE, MODE_STANDBY);
 }
 
