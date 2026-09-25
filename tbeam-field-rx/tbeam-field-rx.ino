@@ -43,6 +43,9 @@ File logFile;
 
 uint16_t lastSeq = 0;
 float lastWind = 0, lastBatt = 0, lastRssi = 0, lastSnr = 0;
+uint8_t  lastVersion = 0;              // 1 or 2: which format this packet used
+float    lastGust = 0, lastLull = 0;   // v2 only - meaningless until lastVersion == 2
+uint16_t lastWindowS = 0;              // v2 only: reporting window, in seconds
 unsigned long lastRxMs = 0;
 uint32_t rxCount = 0;
 
@@ -50,6 +53,35 @@ uint8_t crc8_sum(const uint8_t* d, size_t n) {
   uint8_t c = 0;
   for (size_t i = 0; i < n; i++) c = (uint8_t)(c + d[i]);
   return c;
+}
+
+// v1 (9 B) and v2 (18 B) BOTH start with 0xAA, so dispatch on LENGTH,
+// never on the version byte - byte 1 is not trustworthy until the CRC
+// has passed. Returns true and fills the last* variables only if good.
+bool parsePacket(const uint8_t* b, size_t len) {
+  size_t crcAt;
+  if (len == 9)       crcAt = 8;    // v1: sum of bytes 0..7,  crc at index 8
+  else if (len == 18) crcAt = 17;   // v2: sum of bytes 0..16, crc at index 17
+  else return false;                // unknown length -> drop it (fail closed)
+
+  if (b[0] != 0xAA) return false;
+  if (crc8_sum(b, crcAt) != b[crcAt]) return false;
+
+  if (len == 9) {                                 // ---- v1 ----
+    lastSeq     = (b[6] << 8) | b[7];
+    lastWind    = ((b[2] << 8) | b[3]) / 10.0;    // the mean
+    lastBatt    = (b[4] << 8) | b[5];
+    lastVersion = 1;
+  } else {                                        // ---- v2 ----
+    lastSeq     = (b[12] << 8) | b[13];
+    lastWind    = ((b[4] << 8) | b[5]) / 10.0;    // avg - same 0.1 m/s scale
+    lastGust    = ((b[6] << 8) | b[7]) / 10.0;
+    lastLull    = ((b[8] << 8) | b[9]) / 10.0;
+    lastBatt    = (b[10] << 8) | b[11];
+    lastWindowS = (b[14] << 8) | b[15];
+    lastVersion = 2;
+  }
+  return true;
 }
 
 void setup() {
@@ -129,7 +161,6 @@ void loop() {
   }
   // feed the GPS parser constantly
   while (gpsSerial.available()) gps.encode(gpsSerial.read());
-
   if (rxFlag) {
     rxFlag = false;
 
@@ -138,12 +169,9 @@ void loop() {
     if (len > sizeof(buf)) len = sizeof(buf);
     int state = radio.readData(buf, len);
 
-    if (state == RADIOLIB_ERR_NONE && len == 9 &&
-        buf[0] == 0xAA && crc8_sum(buf, 8) == buf[8]) {
+      if (state == RADIOLIB_ERR_NONE && parsePacket(buf, len)) {
 
-      lastSeq  = (buf[6] << 8) | buf[7];
-      lastWind = ((buf[2] << 8) | buf[3]) / 10.0;
-      lastBatt = (buf[4] << 8) | buf[5];
+
       lastRssi = radio.getRSSI();
       lastSnr  = radio.getSNR();
       lastRxMs = millis();
