@@ -130,7 +130,7 @@ void setup() {
   gpsSerial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
 
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
-  int state = radio.begin(868.0, 125.0, 7, 5, 0x12, 10, 8, 0);
+  int state = radio.begin(868.0, 125.0, 9, 5, 0x12, 10, 8, 0);
   if (state != RADIOLIB_ERR_NONE) {
     display.print("radio fail ");
     display.println(state);

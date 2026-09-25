@@ -151,7 +151,7 @@ impl Radio {
         self.write_register(REG_MODEM_CONFIG1, 0x72)?;
 
         // SF7, normal packet mode, payload CRC on.
-        self.write_register(REG_MODEM_CONFIG2, 0x74)?;
+        self.write_register(REG_MODEM_CONFIG2, 0x94)?;
 
         // AGC auto on; low-data-rate optimize off for SF7/BW125.
         self.write_register(REG_MODEM_CONFIG3, 0x04)?;
