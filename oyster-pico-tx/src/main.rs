@@ -318,9 +318,8 @@ fn build_packet(
     p[1] = PACKET_VERSION;  // 0x02
     p[2] = 1;               // node id
     p[3] = 0;               // flags (unused for now)
-    p[3] = (avg_01 >> 8) as u8; // wind_avg, big-endian
-    p[4] = (avg_01 & 0xFF) as u8;
-    p[5] = (gust_01 >> 8) as u8;
+    p[4] = (avg_01 >> 8) as u8; // wind_avg, big-endian
+    p[5] = (avg_01 & 0xFF) as u8;
     p[6] = (gust_01 >> 8) as u8;
     p[7] = (gust_01 & 0xFF) as u8;
     p[8] = (lull_01 >> 8) as u8;
