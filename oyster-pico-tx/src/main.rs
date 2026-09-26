@@ -20,10 +20,17 @@ use embedded_hal::spi::SpiBus;
 
 use usb_device::{class_prelude::*, prelude::*};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
+use core::cell::RefCell;
+use portable_atomic:: {AtomicU32, Ordering};
+use bsp::hal::gpio::{FunctionSio, Interrupt, Pin, PullUp, SioInput};
+use bsp::hal::gpio::bank0::Gpio22;
+use bsp::hal::pac::interrupt;
+use critical_section::Mutex;
 
-// ---------------- SX1276 registers we use ---------------
+// ---------------- SX1276 regists we use ---------------
 const REG_A_DAC: u8 = 0x4D;
 const PACKET_VERSION: u8 = 0x02;
+const DEBUG_USB: bool= true; // false for field builds: no USB servicing, deeper sleep.
 const SUB_SAMPLES_PER_WINDOW: u32 = 6; // — 6 for bench, 200 for real (600 s / 3 s)
 const WINDOW_S: u16 = (SUB_SAMPLES_PER_WINDOW * 3) as u16; // 3s per sub_sample
 const K_CM_PER_PULSE: u32 = 5; // placeholder - calibrate on site
@@ -50,6 +57,14 @@ const MODE_SLEEP: u8 = 0x80;
 const MODE_STANDBY: u8 = 0x81;
 const MODE_TX: u8 = 0x83;
 const IRQ_TX_DONE: u8 = 0x08;
+
+//The ISR adds to this; the mian loop drais it with swap(0).
+static PULSE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+//The pin must be reachable from the ISR to clear the edge, so it lives
+// in a critical-section-guarded slot rather than a local Variable.
+type AnemometerPin = Pin<Gpio22, FunctionSio<SioInput>, PullUp>;
+static ANEMOMETER: Mutex<RefCell<Option<AnemometerPin>>> = Mutex::new(RefCell::new(None));
 
 #[entry]
 fn main() -> ! {
@@ -96,6 +111,9 @@ fn main() -> ! {
     let mut rst = pins.gpio20.into_push_pull_output();
     // ---- anemometer pulse input ----
     let mut anemometer = pins.gpio22.into_pull_up_input();
+    anemometer.set_interrupt_enabled(Interrupt::EdgeLow, true);
+    critical_section::with(|cs| ANEMOMETER.borrow(cs).replace(Some(anemometer)));
+    unsafe { pac::NVIC::unmask(pac::Interrupt::IO_IRQ_BANK0) };
 
     // ---- USB serial ----
     let usb_bus = UsbBusAllocator::new(bsp::hal::usb::UsbBus::new(
@@ -122,14 +140,15 @@ fn main() -> ! {
     let mut window = Window::new();
     let mut sub_samples: u32 = 0;
     loop {
-        usb_dev.poll(&mut [&mut serial]);
+        if DEBUG_USB {usb_dev.poll(&mut [&mut serial]);}
 
         // Measure for 3 seconds, then report.
         let mut pulses: u32 =0;
         for _ in 0..300{
-            usb_dev.poll(&mut [&mut serial]);
-            pulses += count_pulses_for(&mut anemometer, &mut delay, 10);
+            if DEBUG_USB {usb_dev.poll(&mut [&mut serial]);}
+            delay.delay_ms(10);
         }
+        let pulses = PULSE_COUNT.swap(0, Ordering::Relaxed);
         print_u16(&mut serial, b"pulses=", pulses as u16);
         
         let speed = speed_cms(pulses, 3000);
@@ -161,6 +180,17 @@ fn main() -> ! {
 
 }
 
+#[pac::interrupt]
+fn IO_IRQ_BANK0() {
+    // Clearl the edge that fired. Miss this and the interrupt re-frires forever.
+    critical_section::with(|cs| {
+        let mut slot = ANEMOMETER.borrow(cs).borrow_mut();
+            if let Some(pin) = slot.as_mut() {
+            pin.clear_interrupt(Interrupt::EdgeLow);
+        }
+    });
+    PULSE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
 // ---------------- radio drivers ----------------
 // `impl SpiBus<u8>` = "any type that fulfils the SpiBus contract".
 // You know traits as shared contracts — this just uses one as a
