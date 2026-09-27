@@ -17,23 +17,25 @@ use bsp::hal::{
 
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::SpiBus;
+use bsp::hal::fugit::ExtU32;
+use bsp::hal::timer::{Alarm, Alarm0, Timer};
 
 use usb_device::{class_prelude::*, prelude::*};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 use core::cell::RefCell;
-use portable_atomic:: {AtomicU32, Ordering};
+use portable_atomic:: {AtomicBool, AtomicU32, Ordering};
 use bsp::hal::gpio::{FunctionSio, Interrupt, Pin, PullUp, SioInput};
 use bsp::hal::gpio::bank0::Gpio22;
 use bsp::hal::pac::interrupt;
 use critical_section::Mutex;
 
 // ---------------- SX1276 regists we use ---------------
-const REG_A_DAC: u8 = 0x4D;
+const REG_PA_DAC: u8 = 0x4D;
 const PACKET_VERSION: u8 = 0x02;
 const DEBUG_USB: bool= true; // false for field builds: no USB servicing, deeper sleep.
 const SUB_SAMPLES_PER_WINDOW: u32 = 6; // — 6 for bench, 200 for real (600 s / 3 s)
 const WINDOW_S: u16 = (SUB_SAMPLES_PER_WINDOW * 3) as u16; // 3s per sub_sample
-const K_CM_PER_PULSE: u32 = 5; // placeholder - calibrate on site
+const K_CM_PER_PULSE: u32 = 5; // calibrate on site
 const LORA_SF: u8 = 9; // frozen range is 7 .. 9
 const LORA_MODEM_CONFIG2: u8 = (LORA_SF << 4 ) | 0x04;  //SF in bit 7..4, paylod CRC on
 const REG_OP_MODE: u8 = 0x01;
@@ -65,6 +67,8 @@ static PULSE_COUNT: AtomicU32 = AtomicU32::new(0);
 // in a critical-section-guarded slot rather than a local Variable.
 type AnemometerPin = Pin<Gpio22, FunctionSio<SioInput>, PullUp>;
 static ANEMOMETER: Mutex<RefCell<Option<AnemometerPin>>> = Mutex::new(RefCell::new(None));
+static ALARM: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
+static ALARM_FIRED: AtomicBool = AtomicBool::new(false);
 
 #[entry]
 fn main() -> ! {
@@ -115,6 +119,11 @@ fn main() -> ! {
     critical_section::with(|cs| ANEMOMETER.borrow(cs).replace(Some(anemometer)));
     unsafe { pac::NVIC::unmask(pac::Interrupt::IO_IRQ_BANK0) };
 
+    let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
+    let mut alarm = timer.alarm_0().unwrap();
+    alarm.enable_interrupt();
+    critical_section::with(|cs| ALARM.borrow(cs).replace(Some(alarm)));
+    unsafe { pac::NVIC::unmask(pac::Interrupt::TIMER_IRQ_0) };
     // ---- USB serial ----
     let usb_bus = UsbBusAllocator::new(bsp::hal::usb::UsbBus::new(
         pac.USBCTRL_REGS,
@@ -143,11 +152,18 @@ fn main() -> ! {
         if DEBUG_USB {usb_dev.poll(&mut [&mut serial]);}
 
         // Measure for 3 seconds, then report.
-        let mut pulses: u32 =0;
-        for _ in 0..300{
-            if DEBUG_USB {usb_dev.poll(&mut [&mut serial]);}
-            delay.delay_ms(10);
+        critical_section::with (|cs| {
+            let mut slot = ALARM.borrow(cs).borrow_mut();
+            if let Some(a) = slot.as_mut() {
+                a.schedule(3_000_000u32.micros()).unwrap();
+            }
+        });
+        
+        while !ALARM_FIRED.load(Ordering::Relaxed) {
+            if DEBUG_USB { usb_dev.poll(&mut [&mut serial]); }
+            delay.delay_ms(1);
         }
+        ALARM_FIRED.store(false, Ordering::Relaxed);
         let pulses = PULSE_COUNT.swap(0, Ordering::Relaxed);
         print_u16(&mut serial, b"pulses=", pulses as u16);
         
@@ -190,6 +206,16 @@ fn IO_IRQ_BANK0() {
         }
     });
     PULSE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+#[interrupt]
+fn TIMER_IRQ_0() {
+    critical_section::with(|cs| {
+        let mut slot = ALARM.borrow(cs).borrow_mut();
+        if let Some(a) = slot.as_mut() {
+            a.clear_interrupt();
+        }
+    });
+    ALARM_FIRED.store(true, Ordering::Relaxed);
 }
 // ---------------- radio drivers ----------------
 // `impl SpiBus<u8>` = "any type that fulfils the SpiBus contract".
@@ -300,7 +326,7 @@ fn radio_init_tx(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin) {
     write_register(spi, cs, REG_PREAMBLE_LSB, 0x08);  // preamble = 8 symbols
     write_register(spi, cs, REG_SYNC_WORD, 0x12);
     write_register(spi, cs, REG_FIFO_TX_BASE, 0x00);
-    write_register(spi, cs, REG_A_DAC, 0x87); // enable teh +20 dBfm PAG_BOOST mode
+    write_register(spi, cs, REG_PA_DAC, 0x87); // enable teh +20 dBfm PAG_BOOST mode
     write_register(spi, cs, REG_PA_CONFIG, 0xFF);  // PA_BOOST, ceiling 7, trim 15
     write_register(spi, cs, REG_OP_MODE, MODE_STANDBY);
 }
@@ -315,7 +341,7 @@ fn radio_send(
     write_register(spi, cs, REG_FIFO_ADDR_PTR, 0x00); // write at TX base address
     write_register(spi, cs, REG_PAYLOAD_LENGTH, payload.len() as u8);
     write_fifo(spi, cs, payload);
-    write_register(spi, cs, REG_OP_MODE, MODE_TX);    // airtime at SF7/125kHz ≈ 40 ms
+    write_register(spi, cs, REG_OP_MODE, MODE_TX);  
     for _ in 0..100 {
         if read_register(spi, cs, REG_IRQ_FLAGS) & IRQ_TX_DONE != 0 {
             break;
