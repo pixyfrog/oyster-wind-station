@@ -32,7 +32,7 @@ use critical_section::Mutex;
 // ---------------- SX1276 regists we use ---------------
 const REG_PA_DAC: u8 = 0x4D;
 const PACKET_VERSION: u8 = 0x02;
-const DEBUG_USB: bool= true; // false for field builds: no USB servicing, deeper sleep.
+const DEBUG_USB: bool= false; // false for field builds: no USB servicing, deeper sleep.
 const SUB_SAMPLES_PER_WINDOW: u32 = 6; // — 6 for bench, 200 for real (600 s / 3 s)
 const WINDOW_S: u16 = (SUB_SAMPLES_PER_WINDOW * 3) as u16; // 3s per sub_sample
 const K_CM_PER_PULSE: u32 = 5; // calibrate on site
@@ -160,8 +160,12 @@ fn main() -> ! {
         });
         
         while !ALARM_FIRED.load(Ordering::Relaxed) {
-            if DEBUG_USB { usb_dev.poll(&mut [&mut serial]); }
-            delay.delay_ms(1);
+            if DEBUG_USB {
+                usb_dev.poll(&mut [&mut serial]); 
+                delay.delay_ms(1);
+            } else {
+                cortex_m::asm::wfi();
+            }
         }
         ALARM_FIRED.store(false, Ordering::Relaxed);
         let pulses = PULSE_COUNT.swap(0, Ordering::Relaxed);
