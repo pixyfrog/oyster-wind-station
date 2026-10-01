@@ -6,13 +6,14 @@ use panic_halt as _;
 use rp_pico as bsp;
 
 use bsp::hal::{
-    clocks::{init_clocks_and_plls, Clock},
+    clocks::{init_clocks_and_plls, Clock, ClockSource, ClocksManager},
     fugit::RateExtU32,
     gpio::{FunctionSpi, Pins},
     pac,
     sio::Sio,
     spi::Spi,
     watchdog::Watchdog,
+    xosc::setup_xosc_blocking,
 };
 
 use embedded_hal::digital::{InputPin, OutputPin};
