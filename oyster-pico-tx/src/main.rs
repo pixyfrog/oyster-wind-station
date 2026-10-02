@@ -33,7 +33,9 @@ use critical_section::Mutex;
 // ---------------- SX1276 regists we use ---------------
 const REG_PA_DAC: u8 = 0x4D;
 const PACKET_VERSION: u8 = 0x02;
-const DEBUG_USB: bool= false; // false for field builds: no USB servicing, deeper sleep.
+// true  = bench build: full clock tree (PLL_SYS + PLL_USB) and USB serviced.
+// false = field build: crystal only, no PLLs, no USB servicing.
+const DEBUG_USB: bool= true; 
 const SUB_SAMPLES_PER_WINDOW: u32 = 6; // — 6 for bench, 200 for real (600 s / 3 s)
 const WINDOW_S: u16 = (SUB_SAMPLES_PER_WINDOW * 3) as u16; // 3s per sub_sample
 const K_CM_PER_PULSE: u32 = 5; // calibrate on site
@@ -77,17 +79,31 @@ fn main() -> ! {
     let core = pac::CorePeripherals::take().unwrap();
     
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
-    let clocks = init_clocks_and_plls(
-        rp_pico::XOSC_CRYSTAL_FREQ,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .ok()
-    .unwrap();
+    // Bench build: full clock tree, because USB needs PLL_USB at 48 MHz.
+    // Field build: crystal only, no PLLs — they are the dominant current cost
+    // (PLL_SYS measured ≈ 18 mA, PLL_USB ≈ 3 mA, the crystal ≈ 0.7 mA).
+    let clocks = if DEBUG_USB { 
+        init_clocks_and_plls(
+            rp_pico::XOSC_CRYSTAL_FREQ,
+            pac.XOSC,
+            pac.CLOCKS,
+            pac.PLL_SYS,
+            pac.PLL_USB,
+            &mut pac.RESETS,
+            &mut watchdog,
+        )
+        .ok()
+        .unwrap()
+    } else {
+        // clk_ref MUST stay on the crystal: the watchdog tick, and so the TIMER's
+        // 1 µs tick, derives from it. The ROSC is too imprecise to keep time.
+        let xosc = setup_xosc_blocking(pac.XOSC, rp_pico::XOSC_CRYSTAL_FREQ.Hz()).unwrap();
+        watchdog.enable_tick_generation((rp_pico::XOSC_CRYSTAL_FREQ / 1_000_000) as u8);
+        let mut clocks = ClocksManager::new(pac.CLOCKS);
+        clocks.reference_clock.configure_clock(&xosc, xosc.get_freq()).unwrap();
+        clocks.peripheral_clock.configure_clock(&clocks.system_clock, clocks.system_clock.freq()).unwrap();
+        clocks
+    };
 
     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
