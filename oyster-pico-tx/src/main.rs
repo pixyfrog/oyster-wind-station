@@ -33,9 +33,15 @@ use critical_section::Mutex;
 // ---------------- SX1276 regists we use ---------------
 const REG_PA_DAC: u8 = 0x4D;
 const PACKET_VERSION: u8 = 0x02;
-// true  = bench build: full clock tree (PLL_SYS + PLL_USB) and USB serviced.
-// false = field build: crystal only, no PLLs, no USB servicing.
-const DEBUG_USB: bool= true; 
+// true  = bench build: USB serviced. Requires USE_PLL_CLOCK, which is what
+//         makes clk_usb 48 MHz so the USB controller can be touched at all.
+// false = field build: no USB setup at all. The USB controller is left in
+//         reset, because with clk_usb stopped any access to its registers
+//         stalls the AHB and hangs the core before the radio is driven.
+const DEBUG_USB: bool = false;
+// true  = full clock tree (PLL_SYS 125 MHz + PLL_USB 48 MHz).
+// false = crystal only, no PLLs — they are the dominant current cost.
+const USE_PLL_CLOCK: bool = false;
 const SUB_SAMPLES_PER_WINDOW: u32 = 6; // — 6 for bench, 200 for real (600 s / 3 s)
 const WINDOW_S: u16 = (SUB_SAMPLES_PER_WINDOW * 3) as u16; // 3s per sub_sample
 const K_CM_PER_PULSE: u32 = 5; // calibrate on site
@@ -82,7 +88,7 @@ fn main() -> ! {
     // Bench build: full clock tree, because USB needs PLL_USB at 48 MHz.
     // Field build: crystal only, no PLLs — they are the dominant current cost
     // (PLL_SYS measured ≈ 18 mA, PLL_USB ≈ 3 mA, the crystal ≈ 0.7 mA).
-    let clocks = if DEBUG_USB { 
+    let clocks = if USE_PLL_CLOCK { 
         init_clocks_and_plls(
             rp_pico::XOSC_CRYSTAL_FREQ,
             pac.XOSC,
@@ -94,16 +100,20 @@ fn main() -> ! {
         )
         .ok()
         .unwrap()
-    } else {
-        // clk_ref MUST stay on the crystal: the watchdog tick, and so the TIMER's
-        // 1 µs tick, derives from it. The ROSC is too imprecise to keep time.
-        let xosc = setup_xosc_blocking(pac.XOSC, rp_pico::XOSC_CRYSTAL_FREQ.Hz()).unwrap();
-        watchdog.enable_tick_generation((rp_pico::XOSC_CRYSTAL_FREQ / 1_000_000) as u8);
-        let mut clocks = ClocksManager::new(pac.CLOCKS);
-        clocks.reference_clock.configure_clock(&xosc, xosc.get_freq()).unwrap();
-        clocks.peripheral_clock.configure_clock(&clocks.system_clock, clocks.system_clock.freq()).unwrap();
-        clocks
-    };
+        } else {
+            // clk_ref MUST stay on the crystal: the watchdog tick, and so the TIMER's
+            // 1 µs tick, derives from it. The ROSC is too imprecise to keep time.
+            let xosc = setup_xosc_blocking(pac.XOSC, rp_pico::XOSC_CRYSTAL_FREQ.Hz()).unwrap();
+            watchdog.enable_tick_generation((rp_pico::XOSC_CRYSTAL_FREQ / 1_000_000) as u8);
+            let mut clocks = ClocksManager::new(pac.CLOCKS);
+            clocks.reference_clock.configure_clock(&xosc, xosc.get_freq()).unwrap();
+            // clk_sys was never set: it stayed on the reset default (ROSC) while the HAL
+            // tracked a frequency nobody wrote. Put it on the crystal too, so that the
+            // systick Delay and the SPI baud divisor are computed from a real number.
+            clocks.system_clock.configure_clock(&xosc, xosc.get_freq()).unwrap();
+            clocks.peripheral_clock.configure_clock(&clocks.system_clock, clocks.system_clock.freq()).unwrap();
+            clocks
+        };
 
     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
@@ -141,18 +151,27 @@ fn main() -> ! {
     alarm.enable_interrupt();
     critical_section::with(|cs| ALARM.borrow(cs).replace(Some(alarm)));
     unsafe { pac::NVIC::unmask(pac::Interrupt::TIMER_IRQ_0) };
-    // ---- USB serial ----
-    let usb_bus = UsbBusAllocator::new(bsp::hal::usb::UsbBus::new(
-        pac.USBCTRL_REGS,
-        pac.USBCTRL_DPRAM,
-        clocks.usb_clock,
-        true,
-        &mut pac.RESETS,
-    ));
-    let mut serial = SerialPort::new(&usb_bus);
-    let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x16c0, 0x27dd))
-        .device_class(USB_CLASS_CDC)
-        .build();
+    // ---- USB serial (bench build only) ----
+    // Skipping this entirely when DEBUG_USB = false is not just a current saving:
+    // the field clock tree never starts PLL_USB, so clk_usb is stopped, and the
+    // register/DPRAM writes below would stall the bus and hang the core.
+    let usb_bus = if DEBUG_USB {
+        Some(UsbBusAllocator::new(bsp::hal::usb::UsbBus::new(
+            pac.USBCTRL_REGS,
+            pac.USBCTRL_DPRAM,
+            clocks.usb_clock,
+            true,
+            &mut pac.RESETS,
+        )))
+    } else {
+        None
+    };
+    let mut serial = usb_bus.as_ref().map(SerialPort::new);
+    let mut usb_dev = usb_bus.as_ref().map(|bus| {
+        UsbDeviceBuilder::new(bus, UsbVidPid(0x16c0, 0x27dd))
+            .device_class(USB_CLASS_CDC)
+            .build()
+    });
 
     // Reset pulse, then configure the radio for LoRa TX at 868 MHz.
     cs.set_high().unwrap();
@@ -166,7 +185,11 @@ fn main() -> ! {
     let mut window = Window::new();
     let mut sub_samples: u32 = 0;
     loop {
-        if DEBUG_USB {usb_dev.poll(&mut [&mut serial]);}
+        if DEBUG_USB {
+            if let (Some(dev), Some(ser)) = (usb_dev.as_mut(), serial.as_mut()) {
+                dev.poll(&mut [ser]);
+            }
+        }
 
         // Measure for 3 seconds, then report.
         critical_section::with (|cs| {
@@ -178,7 +201,9 @@ fn main() -> ! {
         
         while !ALARM_FIRED.load(Ordering::Relaxed) {
             if DEBUG_USB {
-                usb_dev.poll(&mut [&mut serial]); 
+                if let (Some(dev), Some(ser)) = (usb_dev.as_mut(), serial.as_mut()) {
+                    dev.poll(&mut [ser]);
+                }
                 delay.delay_ms(1);
             } else {
                 cortex_m::asm::wfi();
@@ -186,19 +211,33 @@ fn main() -> ! {
         }
         ALARM_FIRED.store(false, Ordering::Relaxed);
         let pulses = PULSE_COUNT.swap(0, Ordering::Relaxed);
-        print_u16(&mut serial, b"pulses=", pulses as u16);
+        if DEBUG_USB {
+            if let Some(ser) = serial.as_mut() {
+                print_u16(ser, b"pulses=", pulses as u16);
+            }
+        }
         
         let speed = speed_cms(pulses, 3000);
         window.push(speed);
         sub_samples += 1;
-        print_u16(&mut serial,b"speed_cms=", speed as u16);
+        if DEBUG_USB {
+            if let Some(ser) = serial.as_mut() {
+                print_u16(ser, b"speed_cms=", speed as u16);
+            }
+        }
+
         if sub_samples >= SUB_SAMPLES_PER_WINDOW {
-            let (avg, gust, lull) = window.finish();         
-            print_u16(&mut serial, b"avg=", avg as u16);
-            print_u16(&mut serial, b"gust=", gust as u16);
-            print_u16(&mut serial, b"lull=", lull as u16);
-            print_u16(&mut serial, b"speed_cms=", speed as u16);
-        
+            let (avg, gust, lull) = window.finish();
+
+            if DEBUG_USB {
+                if let Some(ser) = serial.as_mut() {
+                    print_u16(ser, b"avg=", avg as u16);
+                    print_u16(ser, b"gust=", gust as u16);
+                    print_u16(ser, b"lull=", lull as u16);
+                    print_u16(ser, b"speed_cms=", speed as u16);
+                }
+            }
+
             let packet = build_packet(
                 (avg / 10) as u16,
                 (gust / 10) as u16,
@@ -207,16 +246,19 @@ fn main() -> ! {
                 sequence,
             );
             radio_send(&mut spi, &mut cs, &mut delay, &packet);
-            print_u16(&mut serial, b"TX seq=", sequence);
+
+            if DEBUG_USB {
+                if let Some(ser) = serial.as_mut() {
+                    print_u16(ser, b"TX seq=", sequence);
+                }
+            }
             sequence = sequence.wrapping_add(1);
 
             window = Window::new();
             sub_samples = 0;
         }
     }
-
 }
-
 #[pac::interrupt]
 fn IO_IRQ_BANK0() {
     // Clearl the edge that fired. Miss this and the interrupt re-frires forever.
@@ -363,7 +405,7 @@ fn radio_send(
     write_register(spi, cs, REG_PAYLOAD_LENGTH, payload.len() as u8);
     write_fifo(spi, cs, payload);
     write_register(spi, cs, REG_OP_MODE, MODE_TX);  
-    for _ in 0..100 {
+    for _ in 0..500 {
         if read_register(spi, cs, REG_IRQ_FLAGS) & IRQ_TX_DONE != 0 {
             break;
         }
