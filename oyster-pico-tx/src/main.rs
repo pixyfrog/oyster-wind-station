@@ -109,10 +109,11 @@ fn main() -> ! {
             let mut clocks = ClocksManager::new(pac.CLOCKS);
             clocks.reference_clock.configure_clock(&xosc, xosc.get_freq()).unwrap();
             // clk_ref stays on the crystal at 12 MHz for accurate timing (the watchdog
-            // tick and the TIMER's 1 µs tick). clk_sys runs at half that: the domains
-            // that must stay clocked through wfi (sys_io, sys_timer) then burn half the
-            // dynamic power, while SPI (1 MHz) and the systick Delay stay valid.
-            clocks.system_clock.configure_clock(&xosc, (rp_pico::XOSC_CRYSTAL_FREQ / 2).Hz()).unwrap();
+            // tick and the TIMER's 1 µs tick). clk_sys runs at a quarter of that: the
+            // domains that must stay clocked through wfi (sys_io, sys_timer) burn a
+            // quarter of the dynamic power, while SPI (~0.75 MHz) and the systick
+            // Delay stay valid.
+            clocks.system_clock.configure_clock(&xosc, (rp_pico::XOSC_CRYSTAL_FREQ / 4).Hz()).unwrap();
             clocks.peripheral_clock.configure_clock(&clocks.system_clock, clocks.system_clock.freq()).unwrap();
 
             // Nothing but the crystal may be left running. This mirrors pico-sdk
