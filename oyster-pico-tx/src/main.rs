@@ -6,10 +6,11 @@ use panic_halt as _;
 use rp_pico as bsp;
 
 use bsp::hal::{
-    clocks::{init_clocks_and_plls, Clock, ClockSource, ClocksManager},
+    clocks::{init_clocks_and_plls, Clock, ClockGate, ClockSource, ClocksManager, StoppableClock},
     fugit::RateExtU32,
     gpio::{FunctionSpi, Pins},
     pac,
+    rosc::RingOscillator,
     sio::Sio,
     spi::Spi,
     watchdog::Watchdog,
@@ -88,7 +89,7 @@ fn main() -> ! {
     // Bench build: full clock tree, because USB needs PLL_USB at 48 MHz.
     // Field build: crystal only, no PLLs — they are the dominant current cost
     // (PLL_SYS measured ≈ 18 mA, PLL_USB ≈ 3 mA, the crystal ≈ 0.7 mA).
-    let clocks = if USE_PLL_CLOCK { 
+    let mut clocks = if USE_PLL_CLOCK { 
         init_clocks_and_plls(
             rp_pico::XOSC_CRYSTAL_FREQ,
             pac.XOSC,
@@ -112,8 +113,33 @@ fn main() -> ! {
             // systick Delay and the SPI baud divisor are computed from a real number.
             clocks.system_clock.configure_clock(&xosc, xosc.get_freq()).unwrap();
             clocks.peripheral_clock.configure_clock(&clocks.system_clock, clocks.system_clock.freq()).unwrap();
+
+            // Nothing but the crystal may be left running. This mirrors pico-sdk
+            // sleep_run_from_dormant_source: stop the USB and ADC clocks, power down
+            // both PLLs, and stop the ring oscillator. A BOOTSEL flash can leave the
+            // ROM's PLL_USB alive across the jump into the app, and a live PLL costs
+            // its full current even when no clock is routed from it. The PLL power
+            // register 0x2d is PD | DSMPD | POSTDIVPD | VCOPD from the SDK's pll_deinit.
+            clocks.usb_clock.disable();
+            clocks.adc_clock.disable();
+            pac.PLL_SYS.pwr().write(|w| unsafe { w.bits(0x2d) });
+            pac.PLL_USB.pwr().write(|w| unsafe { w.bits(0x2d) });
+            RingOscillator::new(pac.ROSC).initialize().disable();
             clocks
         };
+
+    // In the field build, gate every peripheral clock while the core is in wfi,
+    // keeping only the two wake sources: the TIMER alarm (sys_timer) and the GP22
+    // anemometer edge (sys_io + sys_pads). pico-sdk's sleep_goto_sleep_for keeps
+    // only the system timer; we keep IO as well because pulses are counted in wfi.
+    // wake_en (all ones) restores every clock on wake, so SPI/radio still work.
+    if !DEBUG_USB {
+        let mut gate = ClockGate::default();
+        gate.set_sys_timer(true);
+        gate.set_sys_io(true);
+        gate.set_sys_pads(true);
+        clocks.configure_sleep_enable(gate);
+    }
 
     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
