@@ -108,10 +108,11 @@ fn main() -> ! {
             watchdog.enable_tick_generation((rp_pico::XOSC_CRYSTAL_FREQ / 1_000_000) as u8);
             let mut clocks = ClocksManager::new(pac.CLOCKS);
             clocks.reference_clock.configure_clock(&xosc, xosc.get_freq()).unwrap();
-            // clk_sys was never set: it stayed on the reset default (ROSC) while the HAL
-            // tracked a frequency nobody wrote. Put it on the crystal too, so that the
-            // systick Delay and the SPI baud divisor are computed from a real number.
-            clocks.system_clock.configure_clock(&xosc, xosc.get_freq()).unwrap();
+            // clk_ref stays on the crystal at 12 MHz for accurate timing (the watchdog
+            // tick and the TIMER's 1 µs tick). clk_sys runs at half that: the domains
+            // that must stay clocked through wfi (sys_io, sys_timer) then burn half the
+            // dynamic power, while SPI (1 MHz) and the systick Delay stay valid.
+            clocks.system_clock.configure_clock(&xosc, (rp_pico::XOSC_CRYSTAL_FREQ / 2).Hz()).unwrap();
             clocks.peripheral_clock.configure_clock(&clocks.system_clock, clocks.system_clock.freq()).unwrap();
 
             // Nothing but the crystal may be left running. This mirrors pico-sdk
@@ -417,7 +418,9 @@ fn radio_init_tx(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin) {
     write_register(spi, cs, REG_FIFO_TX_BASE, 0x00);
     write_register(spi, cs, REG_PA_DAC, 0x87); // enable teh +20 dBfm PAG_BOOST mode
     write_register(spi, cs, REG_PA_CONFIG, 0xFF);  // PA_BOOST, ceiling 7, trim 15
-    write_register(spi, cs, REG_OP_MODE, MODE_STANDBY);
+    // Rest in SLEEP, not STANDBY: between init and the first radio_send (one whole
+    // measurement window) the module would otherwise idle in standby at ~1.5 mA.
+    write_register(spi, cs, REG_OP_MODE, MODE_SLEEP);
 }
 
 fn radio_send(
