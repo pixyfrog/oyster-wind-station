@@ -25,24 +25,6 @@ async fn main() {
     let state_for_radio = state.clone();
     std::thread::spawn(move || start_radio_rx_task(state_for_radio));
 
-
-     // Mock packet task disabled while testing real reception.   
-
-    //let state_for_task = state.clone();
-    //tokio::spawn(async move {
-    //    loop {
-    //        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-    //        let mut packet = state_for_task.packet.lock().unwrap();
-    //        *packet = Some(packet::WindPacket {
-    //            node_id: 1,
-    //            wind_speed: 177,
-    //            battery_mv: 3700,
-    //            sequence: 42,
-    //        });
-    //        println!("Packet updated");
-    //    }
-    //});
-
     let app = Router::new()
         .route("/", get(handler))
         .with_state(state);
