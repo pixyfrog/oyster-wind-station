@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 struct AppState {
-    packet: Arc<Mutex<Option<packet::WindPacket>>>,
+    packet: Arc<Mutex<Option<packet::WindPacketV2>>>,
 }
 
 #[tokio::main]
@@ -64,48 +64,23 @@ fn start_radio_rx_task(state: AppState) {
                         println!("RX {} bytes: {:02X?}", bytes.len(), bytes);
 
                         match bytes.len() {
-                            9 => {
-                                let mut raw = [0u8; 9];
-                                raw.copy_from_slice(&bytes);
-
-                                match packet::decode(&raw) {
-                                    Some(p) => {
-                                        println!(
-                                            "DECODED node = {}, wind = {:.1}, battery = {}, sequence = {}",
-                                            p.node_id,
-                                            (p.wind_speed as f32) / 10.0,
-                                            p.battery_mv,
-                                            p.sequence
-                                        );
-                                        let mut shared = state.packet.lock().unwrap();
-                                        *shared = Some(p);
-                                    }
-                                    None => println!("Packet rejected by magic/crc"),
+                            9 => println!(
+                                "9-byte frame — v1 emitter, dropped ({} bytes)",
+                                bytes.len()
+                            ),
+                            18 => match packet::decode_v2(&bytes) {
+                                Some(p) => {
+                                    println!(
+                                        "DECODED v2 avg = {:.1}, gust = {:.1}, lull = {:.1}",
+                                        (p.wind_avg as f32) / 10.0,
+                                        (p.wind_gust as f32) / 10.0,
+                                        (p.wind_lull as f32) / 10.0
+                                    );
+                                    let mut shared = state.packet.lock().unwrap();
+                                    *shared = Some(p);
                                 }
-                            }
-                            18 => {
-                                let mut raw = [0u8; 18];
-                                raw.copy_from_slice(&bytes);
-
-                                match packet::decode_v2(&raw) {
-                                    Some(p) => {
-                                        println!(
-                                            "DECODED v2 avg = {:.1}, gust = {:.1}, lull = {:.1}",
-                                            (p.wind_avg as f32) / 10.0,
-                                            (p.wind_gust as f32) / 10.0,
-                                            (p.wind_lull as f32) / 10.0
-                                        );
-                                        let mut shared = state.packet.lock().unwrap();
-                                        *shared = Some(packet::WindPacket {
-                                            node_id: p.node_id,
-                                            wind_speed: p.wind_avg,
-                                            battery_mv: p.battery_mv,
-                                            sequence: p.sequence,
-                                        });
-                                    }
-                                    None => println!("v2 rejected by magic/version/crc"),
-                                }
-                            }
+                                None => println!("v2 rejected by magic/version/crc"),
+                            },
                             n => println!("Unexpected length: {}", n),
                         }
                     }
@@ -127,11 +102,20 @@ async fn handler(State(state): State<AppState>) -> String {
     let packet = state.packet.lock().unwrap();
     match *packet {
         Some(ref p) => format!(
-            "Node: {}, Wind: {} (m/s), Battery: {} mV, Seq: {}",
-            p.node_id, 
-            (p.wind_speed as f32) / 10.0, 
-            p.battery_mv, 
-            p.sequence),
+            "Node: {}, Wind: {:.1} m/s ({:.1} kn) — gust {:.1}, lull {:.1}, window {} s / {} samples, Battery: {} mV, Seq: {}, Flags: sensor_ok={}, batt_low={}, window_truncated={}",
+            p.node_id,
+            (p.wind_avg as f32) / 10.0,
+            (p.wind_avg as f32) / 10.0 * 1.94384,
+            (p.wind_gust as f32) / 10.0,
+            (p.wind_lull as f32) / 10.0,
+            p.window_s,
+            p.n_sub,
+            p.battery_mv,
+            p.sequence,
+            p.flags & 0x01 != 0,
+            p.flags & 0x02 != 0,
+            p.flags & 0x04 != 0,
+        ),
         None => "Station Starting up".to_string(),
     }
 }

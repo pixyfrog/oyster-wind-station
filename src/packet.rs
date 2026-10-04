@@ -36,25 +36,6 @@ pub fn crc8(data: &[u8]) -> u8 {
     crc
 }
 
-pub fn decode(buf: &[u8;9]) -> Option<WindPacket> {
-    if buf[0]!=0xAA {
-        return None;
-    }
-
-    let crc = crc8(&buf[0..8]);
-    if crc != buf[8] {
-        return None;
-    }
-
-    Some(WindPacket {
-        node_id: buf [1],
-        wind_speed: (((buf[2] as u16) << 8) | (buf[3] as u16)),
-        battery_mv: (((buf[4] as u16) << 8) | (buf[5] as u16)),
-        sequence: (((buf[6] as u16) << 8) | (buf[7] as u16)),
-    })
-
-}
-
 // ---- packet v2 18 bytes ---
 
 pub const MAGIC: u8 = 0xAA;
@@ -70,9 +51,13 @@ pub struct WindPacketV2 {
     pub sequence: u16,
     pub window_s: u16,
     pub n_sub: u8,
+    pub flags: u8,
 }
 
-pub fn decode_v2(buf: &[u8; 18]) -> Option<WindPacketV2> {
+pub fn decode_v2(buf: &[u8]) -> Option<WindPacketV2> {
+    if buf.len() != 18 {
+        return None;
+    }
     if buf[0] != MAGIC {
         return None;
     }
@@ -91,6 +76,7 @@ pub fn decode_v2(buf: &[u8; 18]) -> Option<WindPacketV2> {
         sequence: ((buf[12] as u16) << 8) | (buf[13] as u16),
         window_s: ((buf[14] as u16) << 8) | (buf[15] as u16),
         n_sub: buf[16],
+        flags: buf[3],
     })
 }
 #[cfg(test)]
@@ -98,48 +84,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn roundtrip_preserves_all_field() {
-        let original = WindPacket {
-            node_id : 1,
-            wind_speed : 270,
-            battery_mv: 3200,
-            sequence: 42,
-        };
-    let encoded = encode(&original);
-    let decoded = decode(&encoded).expect("a valid packet must encode");
-    assert_eq!(decoded.node_id, original.node_id);
-    assert_eq!(decoded.wind_speed, original.wind_speed);
-    assert_eq!(decoded.battery_mv, original.battery_mv);
-    assert_eq!(decoded.sequence, original.sequence);
+    fn reject_v1_length_frame() {
+        let mut buf = [0u8; 9];
+        buf[0] = MAGIC;
+        buf[1] = VERSION_V2;
+        assert!(decode_v2(&buf).is_none());
     }
 
-    #[test]
-    fn reject_bad_magic () {
-        let mut buf = encode(&read_packet_mock());
-        buf[0] = 0x00;
-        buf[8] = crc8(&buf[0..8]); // keep the CRC valid — now ONLY the magic check can catch this
-        assert!(decode(&buf).is_none());
-    }
-
-    #[test]
-    fn reject_corrupted_data_byte () {
-        let mut buf = encode(&read_packet_mock());
-        buf[3]= buf[3].wrapping_add(1); // corrupt wind speed, CRC now stale
-        assert!(decode(&buf).is_none());
-    }
-
-    #[test]
-    fn reject_bad_crc () {
-        let mut buf = encode(&read_packet_mock());
-        buf[8] = buf[8].wrapping_add(1); // tamper with the CRC itself
-        assert!(decode(&buf).is_none());
-    }
     #[test]
     fn decode_v2_reads_the_fields() {
         let mut buf = [0u8; 18];
         buf[0] = 0xAA;
         buf[1] = 0x02;
         buf[2] = 1;
+        buf[3] = 0x05;                   // flags: sensor_ok + window_truncated
         buf[4] = 0x01; buf[5] = 0x90;    // avg   400  = 40.0 m/s
         buf[6] = 0x02; buf[7] = 0x58;    // gust  600
         buf[8] = 0x00; buf[9] = 0x64;    // lull  100
@@ -157,5 +115,6 @@ mod tests {
         assert_eq!(p.sequence, 42);
         assert_eq!(p.window_s, 600);
         assert_eq!(p.n_sub, 200);
+        assert_eq!(p.flags, 0x05);
 }
 }
