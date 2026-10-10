@@ -63,10 +63,10 @@ wire_guide_od   = 6.0; // design: guide tube OD
 wire_guide_bore = 1.6; // design: guide bore for the wire
 
 // --- Battery cradle feature (design) ---
-trough_od   = collar_od - 2 * collar_wall + 0.4; // derived: lower half-pipe OD
-trough_id   = cell_d + 0.6;                      // derived: half-pipe bore
-strap_h     = 3.0;                               // design: cell retaining strap height
-strap_wall  = 1.2;                               // design: cell retaining strap wall
+// The part receives a rectangular (purchased) cradle, stuck on a flat table.
+battery_table_w = 18.0;  // design: flat table width (x)
+battery_table_y = -8.5;  // design: table inner face (cradle bonds here)
+battery_table_t = 2.5;   // design: table thickness
 
 // --- Pico bay feature (design) ---
 pico_deck_t = 2.0;   // design: deck thickness
@@ -183,9 +183,10 @@ module arc_wall(center, sweep, z0, z1) {
 }
 
 // The two longitudinal arcs: 90 degrees on one side, 45 on the opposite side.
-module shell_arcs(z0, z1) {
-    arc_wall(arc_a_center, arc_a_sweep, z0, z1);
-    arc_wall(arc_b_center, arc_b_sweep, z0, z1);
+// big_center sets which side carries the 90 degree arc (90 = top, 270 = bottom).
+module shell_arcs(z0, z1, big_center = arc_a_center) {
+    arc_wall(big_center, arc_a_sweep, z0, z1);
+    arc_wall(big_center + 180, arc_b_sweep, z0, z1);
 }
 
 // A vertical radial fin (prints as a wall) between two radii.
@@ -206,32 +207,22 @@ module wire_guide(z0, z1) {
 }
 
 // ---------------------------------------------------------------------------
-// Station 1: battery cradle
-// Two hoops + partial arcs + a lower half-pipe trough the 18650 drops into +
-// two full straps that retain it. The trough reaches both hoops.
+// Station 1: battery cradle carrier
+// Two hoops + partial arcs (90 degree arc at the bottom) + a flat table on the
+// 90 degree arc. A rectangular 18650 cradle is stuck to the table with
+// double-sided adhesive.
 // ---------------------------------------------------------------------------
 module battery_cradle() {
-    L = battery_part_l;
+    L  = battery_part_l;
+    tw = battery_table_w;
+    ty = battery_table_y;          // inner (bonding) face
+    tt = battery_table_t;
     hoop(0);
     hoop(L - collar_h);
-    shell_arcs(0, L);
-    // lower half-pipe trough
-    difference() {
-        cylinder(d = trough_od, h = L);
-        translate([0, 0, -0.1])
-            cylinder(d = trough_id, h = L + 0.2);
-        // open the top half
-        translate([0, trough_od / 2, L / 2])
-            cube([trough_od + 4, trough_od, L + 2], center = true);
-    }
-    // two retaining straps over the cell
-    for (z = [15, L - 18])
-        translate([0, 0, z])
-            difference() {
-                cylinder(d = cell_d + 2 * strap_wall + 0.6, h = strap_h);
-                translate([0, 0, -0.1])
-                    cylinder(d = cell_d + 0.6, h = strap_h + 0.2);
-            }
+    shell_arcs(0, L, 270);         // 90 degree arc on the bottom
+    // flat table on the 90 degree arc (vertical plate -> prints as a wall)
+    translate([-tw / 2, ty - tt, 0])
+        cube([tw, tt, L]);
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +238,7 @@ module pico_bay() {
     z0       = pico_usb_gap;
     hoop(0);
     hoop(L - collar_h);
-    shell_arcs(0, L);
+    shell_arcs(0, L, 270); // 90 degree arc below the Pico table
     // deck (also a longitudinal member)
     translate([-deck_w / 2, -(pico_bay_t / 2 + pico_deck_t), z0])
         cube([deck_w, pico_deck_t, L - z0]);
