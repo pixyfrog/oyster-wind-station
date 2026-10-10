@@ -58,6 +58,18 @@ arc_b_sweep = 45.0;  // design: opposite partial-shell arc
 arc_b_center = 270.0;// design: opposite arc centre (bottom)
 fin_t       = 2.0;   // design: vertical radial fin thickness
 
+// --- Interlocking crenel keys at the hoop ends (design, FDM-friendly) ---
+// Each part's top mates any part's bottom: 3 teeth alternate with 3 notches.
+key_tooth_deg   = 45.0;   // design: tooth arc width
+key_clear_deg   = 3.0;    // design: extra half-width per notch side (clearance)
+key_notch_deg   = key_tooth_deg + 2 * key_clear_deg; // derived: 51 deg
+key_h           = 2.5;    // design: tooth engagement depth
+key_axial_clear = 0.5;    // design: axial clearance (glue room, no bottoming out)
+key_notch_depth = key_h + key_axial_clear; // derived: 3.0 mm
+key_chamfer     = 0.6;    // design: 45 deg lead-in on the tooth tips
+top_teeth       = [90, 210, 330];  // top hoop teeth (one marks the 90 deg arc)
+bottom_teeth    = [30, 150, 270];  // bottom hoop teeth (complementary)
+
 // --- On-axis wire guide (design) ---
 wire_guide_od   = 6.0; // design: guide tube OD
 wire_guide_bore = 1.6; // design: guide bore for the wire
@@ -129,6 +141,10 @@ assert(clearance_pico >= clearance_min,
 assert(max(battery_part_l, max(pico_part_l, max(cp_part_l,
        max(radio_part_l, antenna_part_l)))) <= printer_z,
        "each printed part must fit under the printer height");
+assert(key_h < collar_h && key_notch_depth < collar_h,
+       "crenel teeth and notches must fit inside the hoop height");
+assert(key_notch_deg < 120,
+       "three crenel notches must fit around the hoop");
 
 // ---------------------------------------------------------------------------
 // ECHO report
@@ -140,6 +156,9 @@ echo(str("part lengths    = battery ", battery_part_l, ", pico ", pico_part_l,
          ", counterpoise ", cp_part_l, ", radio ", radio_part_l,
          ", antenna ", antenna_part_l));
 echo(str("shell arcs      = ", arc_a_sweep, " deg top / ", arc_b_sweep, " deg bottom"));
+echo(str("crenel keys     = 3 teeth, ", key_tooth_deg, " deg tooth / ", key_notch_deg,
+         " deg notch, ", key_h, " mm deep, ", 2 * key_clear_deg,
+         " deg + ", key_axial_clear, " mm clearance"));
 echo(str("lambda/4        = ", lambda_quarter, " mm  (radiator ", radiator_len, " mm)"));
 echo(str("lambda/10       = ", lambda_tenth, " mm  (min clearance ", clearance_min, " mm)"));
 echo(str("radiator->cell  = ", clearance_cell, " mm"));
@@ -157,6 +176,49 @@ module hoop(z) {
             translate([0, 0, -0.1])
                 cylinder(d = collar_od - 2 * collar_wall, h = collar_h + 0.2);
         }
+}
+
+// Crenel teeth: arc-wall segments added at a given axial band, at `angles`.
+module key_teeth(z0, z1, angles, sweep) {
+    for (a = angles) arc_wall(a, sweep, z0, z1);
+}
+
+// 45 degree lead-in bevel on a tooth tip. z_tip is the free end, dir = +1 for an
+// upward tooth, -1 for a downward tooth. Bevels the outer and inner edges only;
+// the ring is harmless where there are no teeth.
+module key_chamfer(z_tip, dir) {
+    r_out = collar_od / 2;
+    r_in  = collar_od / 2 - collar_wall;
+    translate([0, 0, z_tip]) {
+        rotate_extrude()
+            polygon([[r_out, 0], [r_out - key_chamfer, 0], [r_out, -dir * key_chamfer]]);
+        rotate_extrude()
+            polygon([[r_in, 0], [r_in + key_chamfer, 0], [r_in, -dir * key_chamfer]]);
+    }
+}
+
+// Apply the crenel keys to a whole part end. The keys are cut/added to the
+// union of EVERYTHING at that end (base hoop + shell arcs + features), so the
+// neighbour's teeth clear the arcs as well as the hoop. key_bottom/key_top
+// false leaves a free (plain) end for the outermost parts.
+module apply_keys(L, key_bottom = true, key_top = true) {
+    difference() {
+        union() {
+            children();
+            if (key_bottom)
+                key_teeth(-key_h, 0.5, bottom_teeth, key_tooth_deg);
+            if (key_top)
+                key_teeth(L - 0.5, L + key_h, top_teeth, key_tooth_deg);
+        }
+        // bottom notches receive the part below's upward teeth
+        if (key_bottom)
+            key_teeth(-0.2, key_notch_depth, top_teeth, key_notch_deg);
+        // top notches receive the part above's downward teeth
+        if (key_top)
+            key_teeth(L - key_notch_depth, L + 0.2, bottom_teeth, key_notch_deg);
+        if (key_bottom) key_chamfer(-key_h, -1);
+        if (key_top) key_chamfer(L + key_h, +1);
+    }
 }
 
 // A pie-sector wedge (r = 0 -> large) used to cut a partial-shell arc. Built
@@ -217,12 +279,14 @@ module battery_cradle() {
     tw = battery_table_w;
     ty = battery_table_y;          // inner (bonding) face
     tt = battery_table_t;
-    hoop(0);
-    hoop(L - collar_h);
-    shell_arcs(0, L, 270);         // 90 degree arc on the bottom
-    // flat table on the 90 degree arc (vertical plate -> prints as a wall)
-    translate([-tw / 2, ty - tt, 0])
-        cube([tw, tt, L]);
+    apply_keys(L, key_bottom = false, key_top = true) { // bottom end is free
+        hoop(0);
+        hoop(L - collar_h);
+        shell_arcs(0, L, 270);         // 90 degree arc on the bottom
+        // flat table on the 90 degree arc (vertical plate -> prints as a wall)
+        translate([-tw / 2, ty - tt, 0])
+            cube([tw, tt, L]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -236,16 +300,18 @@ module pico_bay() {
     rail_in  = pico_w / 2 + 0.2;                  // 10.7
     rail_out = deck_w / 2;                        // 12.7
     z0       = pico_usb_gap;
-    hoop(0);
-    hoop(L - collar_h);
-    shell_arcs(0, L, 270); // 90 degree arc below the Pico table
-    // deck (also a longitudinal member)
-    translate([-deck_w / 2, -(pico_bay_t / 2 + pico_deck_t), z0])
-        cube([deck_w, pico_deck_t, L - z0]);
-    // side rails on the deck
-    for (x = [-1, 1])
-        translate([x > 0 ? rail_in : -rail_out, -pico_bay_t / 2 - 1, z0])
-            cube([rail_out - rail_in, pico_bay_t + 1, L - z0]);
+    apply_keys(L) {
+        hoop(0);
+        hoop(L - collar_h);
+        shell_arcs(0, L, 270); // 90 degree arc below the Pico table
+        // deck (also a longitudinal member)
+        translate([-deck_w / 2, -(pico_bay_t / 2 + pico_deck_t), z0])
+            cube([deck_w, pico_deck_t, L - z0]);
+        // side rails on the deck
+        for (x = [-1, 1])
+            translate([x > 0 ? rail_in : -rail_out, -pico_bay_t / 2 - 1, z0])
+                cube([rail_out - rail_in, pico_bay_t + 1, L - z0]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -255,21 +321,23 @@ module pico_bay() {
 // ---------------------------------------------------------------------------
 module counterpoise_carrier() {
     L = cp_part_l;
-    hoop(0);
-    hoop(L - collar_h);
-    // full shell boss for the brass tube
-    difference() {
-        cylinder(d = cp_boss_od, h = L);
-        translate([0, 0, -0.1])
-            cylinder(d = cp_boss_id, h = L + 0.2);
+    apply_keys(L) {
+        hoop(0);
+        hoop(L - collar_h);
+        // full shell boss for the brass tube
+        difference() {
+            cylinder(d = cp_boss_od, h = L);
+            translate([0, 0, -0.1])
+                cylinder(d = cp_boss_id, h = L + 0.2);
+        }
+        // vertical fins: boss -> hoops
+        for (a = [0, 120, 240])
+            fin(a, cp_boss_od / 2 - 0.5, collar_od / 2 - collar_wall + 0.2, 0, L);
+        // on-axis wire guide + fins to the boss
+        wire_guide(0, L);
+        for (a = [0, 180])
+            fin(a, wire_guide_od / 2 - 0.5, cp_boss_id / 2 + 0.5, 0, L);
     }
-    // vertical fins: boss -> hoops
-    for (a = [0, 120, 240])
-        fin(a, cp_boss_od / 2 - 0.5, collar_od / 2 - collar_wall + 0.2, 0, L);
-    // on-axis wire guide + fins to the boss
-    wire_guide(0, L);
-    for (a = [0, 180])
-        fin(a, wire_guide_od / 2 - 0.5, cp_boss_id / 2 + 0.5, 0, L);
 }
 
 // ---------------------------------------------------------------------------
@@ -283,23 +351,25 @@ module radio_mount() {
     deck_w   = collar_od - 2 * collar_wall + 0.4; // reaches both hoops
     rail_in  = radio_w / 2 + 0.2;                 // 8.2
     rail_out = deck_w / 2;                        // 12.7
-    hoop(0);
-    hoop(L - collar_h);
-    shell_arcs(0, L, 270);        // 90 degree arc below the board table
-    // table (also a longitudinal member)
-    translate([-deck_w / 2, -(radio_slot_t / 2 + pico_deck_t), 0])
-        cube([deck_w, pico_deck_t, L]);
-    // two locating rails on the table
-    for (x = [-1, 1])
-        translate([x > 0 ? rail_in : -rail_out, -radio_slot_t / 2 - 1, 0])
-            cube([rail_out - rail_in, radio_slot_t + 1, L]);
-    // cable tie-down loop on the lower arc
-    rotate([0, 0, 270])
-        translate([10.75, 0, 2])
-            difference() {
-                cube([6, 3.5, 5], center = true);
-                cylinder(d = 3, h = 6, center = true);
-            }
+    apply_keys(L) {
+        hoop(0);
+        hoop(L - collar_h);
+        shell_arcs(0, L, 270);        // 90 degree arc below the board table
+        // table (also a longitudinal member)
+        translate([-deck_w / 2, -(radio_slot_t / 2 + pico_deck_t), 0])
+            cube([deck_w, pico_deck_t, L]);
+        // two locating rails on the table
+        for (x = [-1, 1])
+            translate([x > 0 ? rail_in : -rail_out, -radio_slot_t / 2 - 1, 0])
+                cube([rail_out - rail_in, radio_slot_t + 1, L]);
+        // cable tie-down loop on the lower arc
+        rotate([0, 0, 270])
+            translate([10.75, 0, 2])
+                difference() {
+                    cube([6, 3.5, 5], center = true);
+                    cylinder(d = 3, h = 6, center = true);
+                }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -309,12 +379,14 @@ module radio_mount() {
 // ---------------------------------------------------------------------------
 module antenna_guide() {
     L = antenna_part_l;
-    hoop(0);
-    hoop(L - collar_h);
-    shell_arcs(0, L);
-    wire_guide(0, L);
-    for (a = [arc_a_center, arc_b_center])
-        fin(a, wire_guide_od / 2 - 0.5, collar_od / 2 - collar_wall + 0.2, 0, L);
+    apply_keys(L, key_bottom = true, key_top = false) { // top end is free
+        hoop(0);
+        hoop(L - collar_h);
+        shell_arcs(0, L);
+        wire_guide(0, L);
+        for (a = [arc_a_center, arc_b_center])
+            fin(a, wire_guide_od / 2 - 0.5, collar_od / 2 - collar_wall + 0.2, 0, L);
+    }
 }
 
 // ---------------------------------------------------------------------------
