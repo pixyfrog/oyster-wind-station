@@ -95,6 +95,9 @@ section_b_l  = total_l - split_z;        // 89  -> 357
 
 // --- Counterpoise sleeve carrier (design) ---
 sleeve_boss_od = 20.0;   // design: slides inside a 22 mm copper-pipe offcut (ID ~20.2)
+sleeve_boss_bore = 16.0; // design: hollow boss to save filament
+sleeve_ridge_d = 20.2;   // design: shallow retention ring for the copper sleeve
+sleeve_ridge_h = 1.6;    // design: retention ring height
 
 // --- Derived clearances: radiator start to the hottest conductors below it ---
 clearance_cell = radiator_z0 - cell_z1;  // derived: 251 - 89  = 162
@@ -194,10 +197,27 @@ module pico_bay() {
     }
 }
 
+// Counterpoise carrier: a hollow boss the 22 mm copper-pipe offcut slides over,
+// giving ~86-90 mm of sleeve on the ground side directly below the feed. Two
+// shallow retention rings hold the sleeve. Local z origin = sleeve_z0.
+module sleeve_boss() {
+    difference() {
+        union() {
+            cylinder(d = sleeve_boss_od, h = sleeve_l);
+            for (z = [12, sleeve_l - 12])
+                translate([0, 0, z - sleeve_ridge_h / 2])
+                    cylinder(d = sleeve_ridge_d, h = sleeve_ridge_h);
+        }
+        translate([0, 0, -0.1])
+            cylinder(d = sleeve_boss_bore, h = sleeve_l + 0.2);
+    }
+}
+
 // Full 357 mm stack, bottom (z=0) to top. Stations are added in later commits.
 module full_stack() {
     translate([0, 0, cell_z0 - stop_ring_h]) cell_cradle();
     translate([0, 0, pico_z0]) pico_bay();
+    translate([0, 0, sleeve_z0]) sleeve_boss();
 }
 
 module section_a() {
@@ -206,6 +226,7 @@ module section_a() {
 
 module section_b() {
     translate([0, 0, pico_z0]) pico_bay();
+    translate([0, 0, sleeve_z0]) sleeve_boss();
 }
 
 // ---------------------------------------------------------------------------
