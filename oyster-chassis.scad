@@ -72,6 +72,11 @@ lambda_tenth   = lambda / 10;    // derived: ~34.6 mm
 radiator_len  = 86.0;            // design: straight lambda/4 wire on axis
 clearance_min = 50.0;            // design: minimum radiator clearance (>= lambda/10 ideal 80-100)
 
+// --- RFM95W mount (design) ---
+radio_slot_w = radio_w + 0.4;  // derived: 16.4 mm board slot width
+radio_slot_t = 2.0;            // design: board slot thickness (board ~1.6 + clearance)
+radio_wall   = 1.6;            // design: mount wall thickness
+
 // --- Station layout, bottom (z=0) to top (measured/derived stack-up) ---
 cap_h        = 20.0;                     // service cap + desiccant space
 cell_z0      = cap_h;                    // 20
@@ -213,11 +218,46 @@ module sleeve_boss() {
     }
 }
 
+// RFM95W mount: a U-cradle holding the radio board vertically so the ANT pad
+// faces up (toward the radiator) and the GND pad faces down (ground side). The
+// board sits centred on the axis so the lambda/4 wire can run straight up.
+// A tie-down loop below takes the cable-bundle load off the antenna pad.
+// Local z origin = radio_z0.
+module radio_mount() {
+    bw   = radio_slot_w;
+    bt   = radio_slot_t;
+    bz   = radio_l;
+    wall = radio_wall;
+    difference() {
+        union() {
+            // floor under the board
+            translate([-(bw / 2 + wall), -bt / 2 - wall, 0])
+                cube([bw + 2 * wall, bt + 2 * wall, 2]);
+            // two side walls gripping the board edges
+            for (x = [-1, 1])
+                translate([x * (bw / 2 + wall / 2) - wall / 2, -bt / 2 - wall, 0])
+                    cube([wall, bt + 2 * wall, bz]);
+        }
+        // GND feed hole in the floor (on axis)
+        translate([0, 0, -0.1]) cylinder(d = 6, h = 3);
+        // ANT lead hole at the top (on axis)
+        translate([0, 0, bz - 2]) cylinder(d = 6, h = 2.2);
+    }
+    // cable-bundle tie-down: a block with a 3 mm bore for a zip tie
+    translate([0, -(bt / 2 + wall + 2.5), 4]) {
+        difference() {
+            cube([12, 5, 7], center = true);
+            rotate([90, 0, 0]) cylinder(d = 3, h = 7, center = true);
+        }
+    }
+}
+
 // Full 357 mm stack, bottom (z=0) to top. Stations are added in later commits.
 module full_stack() {
     translate([0, 0, cell_z0 - stop_ring_h]) cell_cradle();
     translate([0, 0, pico_z0]) pico_bay();
     translate([0, 0, sleeve_z0]) sleeve_boss();
+    translate([0, 0, radio_z0]) radio_mount();
 }
 
 module section_a() {
@@ -227,6 +267,7 @@ module section_a() {
 module section_b() {
     translate([0, 0, pico_z0]) pico_bay();
     translate([0, 0, sleeve_z0]) sleeve_boss();
+    translate([0, 0, radio_z0]) radio_mount();
 }
 
 // ---------------------------------------------------------------------------
