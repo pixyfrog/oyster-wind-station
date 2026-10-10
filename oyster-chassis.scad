@@ -72,6 +72,13 @@ lambda_tenth   = lambda / 10;    // derived: ~34.6 mm
 radiator_len  = 86.0;            // design: straight lambda/4 wire on axis
 clearance_min = 50.0;            // design: minimum radiator clearance (>= lambda/10 ideal 80-100)
 
+// --- Antenna guide (design, skeletal: thin guides only) ---
+guide_r      = 12.0;   // design: cage radius (inside the 26.1 bore with clearance)
+guide_strut  = 1.6;    // design: strut / spoke thickness
+guide_hub_d  = 4.0;    // design: hub collar diameter
+guide_hub_h  = 2.0;    // design: hub collar thickness
+guide_bore   = 1.6;    // design: wire bore through each hub
+
 // --- RFM95W mount (design) ---
 radio_slot_w = radio_w + 0.4;  // derived: 16.4 mm board slot width
 radio_slot_t = 2.0;            // design: board slot thickness (board ~1.6 + clearance)
@@ -252,12 +259,40 @@ module radio_mount() {
     }
 }
 
+// Skeletal antenna guide: three axial struts on a 24 mm cage with three hub
+// collars that hold the straight lambda/4 wire on the tube axis. No solid wall
+// around the radiator, so the printed plastic loads the wire as little as
+// possible. Local z origin = radiator_z0.
+module antenna_guide() {
+    levels = [0, radiator_len / 2, radiator_len - guide_hub_h];
+    // three axial struts
+    for (a = [0, 120, 240])
+        rotate([0, 0, a])
+            translate([guide_r, 0, radiator_len / 2])
+                cylinder(d = guide_strut, h = radiator_len, center = true);
+    // hub collars with three radial spokes each
+    for (z = levels) {
+        translate([0, 0, z])
+            difference() {
+                cylinder(d = guide_hub_d, h = guide_hub_h);
+                translate([0, 0, -0.1])
+                    cylinder(d = guide_bore, h = guide_hub_h + 0.2);
+            }
+        for (a = [0, 120, 240])
+            rotate([0, 0, a])
+                translate([0, 0, z + guide_hub_h / 2])
+                    rotate([0, 90, 0])
+                        cylinder(d = guide_strut, h = guide_r);
+    }
+}
+
 // Full 357 mm stack, bottom (z=0) to top. Stations are added in later commits.
 module full_stack() {
     translate([0, 0, cell_z0 - stop_ring_h]) cell_cradle();
     translate([0, 0, pico_z0]) pico_bay();
     translate([0, 0, sleeve_z0]) sleeve_boss();
     translate([0, 0, radio_z0]) radio_mount();
+    translate([0, 0, radiator_z0]) antenna_guide();
 }
 
 module section_a() {
@@ -268,6 +303,7 @@ module section_b() {
     translate([0, 0, pico_z0]) pico_bay();
     translate([0, 0, sleeve_z0]) sleeve_boss();
     translate([0, 0, radio_z0]) radio_mount();
+    translate([0, 0, radiator_z0]) antenna_guide();
 }
 
 // ---------------------------------------------------------------------------
