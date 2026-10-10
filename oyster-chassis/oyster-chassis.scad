@@ -66,7 +66,6 @@ key_notch_deg   = key_tooth_deg + 2 * key_clear_deg; // derived: 51 deg
 key_h           = 2.5;    // design: tooth engagement depth
 key_axial_clear = 0.5;    // design: axial clearance (glue room, no bottoming out)
 key_notch_depth = key_h + key_axial_clear; // derived: 3.0 mm
-key_chamfer     = 0.6;    // design: 45 deg lead-in on the tooth tips
 top_teeth       = [90, 210, 330];  // top hoop teeth (one marks the 90 deg arc)
 bottom_teeth    = [30, 150, 270];  // bottom hoop teeth (complementary)
 
@@ -183,24 +182,11 @@ module key_teeth(z0, z1, angles, sweep) {
     for (a = angles) arc_wall(a, sweep, z0, z1);
 }
 
-// 45 degree lead-in bevel on a tooth tip. z_tip is the free end, dir = +1 for an
-// upward tooth, -1 for a downward tooth. Bevels the outer and inner edges only;
-// the ring is harmless where there are no teeth.
-module key_chamfer(z_tip, dir) {
-    r_out = collar_od / 2;
-    r_in  = collar_od / 2 - collar_wall;
-    translate([0, 0, z_tip]) {
-        rotate_extrude()
-            polygon([[r_out, 0], [r_out - key_chamfer, 0], [r_out, -dir * key_chamfer]]);
-        rotate_extrude()
-            polygon([[r_in, 0], [r_in + key_chamfer, 0], [r_in, -dir * key_chamfer]]);
-    }
-}
-
 // Apply the crenel keys to a whole part end. The keys are cut/added to the
 // union of EVERYTHING at that end (base hoop + shell arcs + features), so the
 // neighbour's teeth clear the arcs as well as the hoop. key_bottom/key_top
-// false leaves a free (plain) end for the outermost parts.
+// false leaves a free (plain) end for the outermost parts. Tooth tips are left
+// flat: on the bottom end that is the first layer, so it wants full surface.
 module apply_keys(L, key_bottom = true, key_top = true) {
     difference() {
         union() {
@@ -216,8 +202,6 @@ module apply_keys(L, key_bottom = true, key_top = true) {
         // top notches receive the part above's downward teeth
         if (key_top)
             key_teeth(L - key_notch_depth, L + 0.2, bottom_teeth, key_notch_deg);
-        if (key_bottom) key_chamfer(-key_h, -1);
-        if (key_top) key_chamfer(L + key_h, +1);
     }
 }
 
