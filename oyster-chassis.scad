@@ -82,6 +82,11 @@ rib_th       = 2.5;        // design: rib thickness (axial)
 rib_w        = 2.0;        // design: rib width (radial/tangential)
 cap_l        = 18.0;       // design: removable service-cap depth
 
+// --- Segment join at z = split_z (design: press-fit lap, never bonded) ---
+joint_overlap = 6.0;       // design: axial lap length
+spigot_od     = 28.0;      // design: male spigot OD (section_b)
+socket_bore   = 27.7;      // design: female socket bore (section_a)
+
 // --- Antenna guide (design, skeletal: thin guides only) ---
 guide_r      = 12.0;   // design: cage radius (inside the 26.1 bore with clearance)
 guide_strut  = 1.6;    // design: strut / spoke thickness
@@ -148,6 +153,8 @@ assert(clearance_pico >= clearance_min,
        "radiator clearance to the Pico must be >= clearance_min");
 assert(section_a_l <= printer_z && section_b_l <= printer_z,
        "each printed segment must fit under the printer height");
+assert(socket_bore > chassis_bore && spigot_od > socket_bore && spigot_od < chassis_od,
+       "segment lap must be an interference spigot inside the socket");
 
 // ---------------------------------------------------------------------------
 // ECHO report
@@ -369,17 +376,32 @@ module full_stack() {
 }
 
 module section_a() {
-    shell(0, split_z);
-    service_cap();
-    translate([0, 0, cell_z0 - stop_ring_h]) cell_cradle();
-    // ribs: cradle -> shell (angles clear of the +Y C-slot and the windows)
-    for (a = [0, 150, 270])
-        for (z = [cell_z0 + 15, cell_z1 - 15])
-            rib(a, z, cradle_od / 2 - 0.6, chassis_bore / 2 + 0.2);
+    difference() {
+        union() {
+            shell(0, split_z);
+            service_cap();
+            translate([0, 0, cell_z0 - stop_ring_h]) cell_cradle();
+            // ribs: cradle -> shell (angles clear of the +Y C-slot and windows)
+            for (a = [0, 150, 270])
+                for (z = [cell_z0 + 15, cell_z1 - 15])
+                    rib(a, z, cradle_od / 2 - 0.6, chassis_bore / 2 + 0.2);
+        }
+        // female socket for the segment lap (removes wall only, not the cradle)
+        translate([0, 0, split_z - joint_overlap])
+            difference() {
+                cylinder(d = socket_bore, h = joint_overlap + 0.1);
+                cylinder(d = chassis_bore, h = joint_overlap + 0.2);
+            }
+    }
 }
 
 module section_b() {
     shell(split_z, shell_top);
+    translate([0, 0, split_z - joint_overlap])
+        difference() {
+            cylinder(d = spigot_od, h = joint_overlap);
+            translate([0, 0, -0.1]) cylinder(d = chassis_bore, h = joint_overlap + 0.2);
+        }
     translate([0, 0, pico_z0]) pico_bay();
     translate([0, 0, sleeve_z0]) sleeve_boss();
     translate([0, 0, radio_z0]) radio_mount();
