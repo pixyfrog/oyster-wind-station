@@ -3,16 +3,17 @@
 //
 // Five independent parts stack bottom-to-top inside the PVC bore (the PVC tube
 // is NOT modelled). Each part is a small skeleton: two transverse ribs (hoops)
-// joined by longitudinal members, plus one station-specific feature. The parts
-// are printed separately and glued into a chain; the only station with an outer
-// shell is the counterpoise carrier, which receives the brass/copper tube.
+// joined by partial outer-shell arcs, plus one station-specific feature. The
+// arcs give real FDM surface instead of thin rods. The parts are printed
+// separately and glued into a chain; only the counterpoise carrier has a full
+// shell, which receives the brass/copper tube.
 //
-//   openscad -D part=0 -o /tmp/all.stl        oyster-chassis.scad  // assembled
-//   openscad -D part=1 -o /tmp/battery.stl    oyster-chassis.scad  // battery cradle
-//   openscad -D part=2 -o /tmp/pico.stl       oyster-chassis.scad  // Pico bay
-//   openscad -D part=3 -o /tmp/counterpoise.stl oyster-chassis.scad // counterpoise
-//   openscad -D part=4 -o /tmp/radio.stl      oyster-chassis.scad  // radio mount
-//   openscad -D part=5 -o /tmp/antenna.stl    oyster-chassis.scad  // antenna guide
+//   openscad -D part=0 -o /tmp/all.stl          oyster-chassis.scad  // assembled
+//   openscad -D part=1 -o /tmp/battery.stl      oyster-chassis.scad  // battery cradle
+//   openscad -D part=2 -o /tmp/pico.stl         oyster-chassis.scad  // Pico bay
+//   openscad -D part=3 -o /tmp/counterpoise.stl oyster-chassis.scad  // counterpoise
+//   openscad -D part=4 -o /tmp/radio.stl        oyster-chassis.scad  // radio mount
+//   openscad -D part=5 -o /tmp/antenna.stl      oyster-chassis.scad  // antenna guide
 
 $fn = 96; // modest tessellation for a 4 GB machine
 
@@ -47,13 +48,19 @@ pico_bay_t  = 6.0;   // design: Pico + solder joints, no Dupont header stack
 radio_w     = 16.0;  // measured: RFM95W width
 radio_l     = 16.0;  // measured: RFM95W length
 
-// --- Skeleton frame (design): two ribs (hoops) + longitudinal members ---
+// --- Skeleton frame (design): two ribs (hoops) + partial shell arcs ---
 collar_od   = 29.0;  // design: rib outer diameter (slides in the 30.5 bore)
-collar_wall = 2.0;   // design: rib radial wall
-collar_h    = 4.0;   // design: rib axial thickness
-rod_d       = 2.5;   // design: longitudinal rod diameter
-rod_r       = 12.5;  // design: rod pitch radius (overlaps the rib inner face)
-rod_angles  = [0, 120, 240]; // design: three rods at 120 degrees
+collar_wall = 2.0;   // design: shell / rib wall
+collar_h    = 4.0;   // design: transverse rib axial thickness
+arc_a_sweep = 90.0;  // design: main partial-shell arc
+arc_a_center = 90.0; // design: main arc centre (top)
+arc_b_sweep = 45.0;  // design: opposite partial-shell arc
+arc_b_center = 270.0;// design: opposite arc centre (bottom)
+fin_t       = 2.0;   // design: vertical radial fin thickness
+
+// --- On-axis wire guide (design) ---
+wire_guide_od   = 6.0; // design: guide tube OD
+wire_guide_bore = 1.6; // design: guide bore for the wire
 
 // --- Battery cradle feature (design) ---
 trough_od   = collar_od - 2 * collar_wall + 0.4; // derived: lower half-pipe OD
@@ -132,6 +139,7 @@ echo(str("total length    = ", total_l, " mm"));
 echo(str("part lengths    = battery ", battery_part_l, ", pico ", pico_part_l,
          ", counterpoise ", cp_part_l, ", radio ", radio_part_l,
          ", antenna ", antenna_part_l));
+echo(str("shell arcs      = ", arc_a_sweep, " deg top / ", arc_b_sweep, " deg bottom"));
 echo(str("lambda/4        = ", lambda_quarter, " mm  (radiator ", radiator_len, " mm)"));
 echo(str("lambda/10       = ", lambda_tenth, " mm  (min clearance ", clearance_min, " mm)"));
 echo(str("radiator->cell  = ", clearance_cell, " mm"));
@@ -151,26 +159,62 @@ module hoop(z) {
         }
 }
 
-// One longitudinal rod between two axial stations.
-module rod(angle, z0, z1) {
-    rotate([0, 0, angle])
-        translate([rod_r, 0, (z0 + z1) / 2])
-            cylinder(d = rod_d, h = z1 - z0, center = true);
+// A pie-sector wedge (r = 0 -> large) used to cut a partial-shell arc. Built
+// from a triangle so it works on OpenSCAD 2021.01, whose cylinder() has no
+// working `angle` parameter.
+module wedge(center, sweep, h) {
+    rotate([0, 0, center - sweep / 2])
+        linear_extrude(height = h)
+            polygon([[0, 0], [100, 0],
+                     [100 * cos(sweep), 100 * sin(sweep)]]);
 }
 
-module rods(z0, z1) {
-    for (a = rod_angles) rod(a, z0, z1);
+// One longitudinal partial-shell arc at the outer wall radius.
+module arc_wall(center, sweep, z0, z1) {
+    translate([0, 0, z0])
+        intersection() {
+            difference() {
+                cylinder(d = collar_od, h = z1 - z0);
+                translate([0, 0, -0.1])
+                    cylinder(d = collar_od - 2 * collar_wall, h = z1 - z0 + 0.2);
+            }
+            wedge(center, sweep, z1 - z0);
+        }
+}
+
+// The two longitudinal arcs: 90 degrees on one side, 45 on the opposite side.
+module shell_arcs(z0, z1) {
+    arc_wall(arc_a_center, arc_a_sweep, z0, z1);
+    arc_wall(arc_b_center, arc_b_sweep, z0, z1);
+}
+
+// A vertical radial fin (prints as a wall) between two radii.
+module fin(angle, r_in, r_out, z0, z1) {
+    rotate([0, 0, angle])
+        translate([(r_in + r_out) / 2, 0, (z0 + z1) / 2])
+            cube([r_out - r_in, fin_t, z1 - z0], center = true);
+}
+
+// An on-axis wire guide tube held in the middle of the part.
+module wire_guide(z0, z1) {
+    translate([0, 0, z0])
+        difference() {
+            cylinder(d = wire_guide_od, h = z1 - z0);
+            translate([0, 0, -0.1])
+                cylinder(d = wire_guide_bore, h = z1 - z0 + 0.2);
+        }
 }
 
 // ---------------------------------------------------------------------------
 // Station 1: battery cradle
-// Two hoops + a lower half-pipe trough the 18650 drops into + two full straps
-// that retain it. The trough reaches both hoops, so it is the main member.
+// Two hoops + partial arcs + a lower half-pipe trough the 18650 drops into +
+// two full straps that retain it. The trough reaches both hoops.
 // ---------------------------------------------------------------------------
 module battery_cradle() {
     L = battery_part_l;
     hoop(0);
     hoop(L - collar_h);
+    shell_arcs(0, L);
     // lower half-pipe trough
     difference() {
         cylinder(d = trough_od, h = L);
@@ -188,14 +232,12 @@ module battery_cradle() {
                 translate([0, 0, -0.1])
                     cylinder(d = cell_d + 0.6, h = strap_h + 0.2);
             }
-    rods(0, L);
 }
 
 // ---------------------------------------------------------------------------
 // Station 2: Pico bay
-// Two hoops + a flat deck and two side rails; the board lies flat with the
-// USB-C port facing the bottom cap (open gap at the bottom). Wires leave
-// axially through the open frame.
+// Two hoops + partial arcs + a flat deck and two side rails; the board lies
+// flat with the USB-C port facing the bottom cap. Wires leave axially.
 // ---------------------------------------------------------------------------
 module pico_bay() {
     L        = pico_part_l;
@@ -205,44 +247,44 @@ module pico_bay() {
     z0       = pico_usb_gap;
     hoop(0);
     hoop(L - collar_h);
-    // deck (also the main longitudinal member)
+    shell_arcs(0, L);
+    // deck (also a longitudinal member)
     translate([-deck_w / 2, -(pico_bay_t / 2 + pico_deck_t), z0])
         cube([deck_w, pico_deck_t, L - z0]);
     // side rails on the deck
     for (x = [-1, 1])
         translate([x > 0 ? rail_in : -rail_out, -pico_bay_t / 2 - 1, z0])
             cube([rail_out - rail_in, pico_bay_t + 1, L - z0]);
-    // two top rods for rigidity
-    rod(60, 0, L);
-    rod(300, 0, L);
 }
 
 // ---------------------------------------------------------------------------
 // Station 3: counterpoise carrier
-// Two hoops + a hollow boss on the axis that the brass/copper tube slides over
-// (the mass), joined by three radial longitudinal members.
+// Two hoops + a full hollow boss the brass/copper tube slides over (the mass),
+// with vertical fins to the hoops and an on-axis wire guide inside.
 // ---------------------------------------------------------------------------
 module counterpoise_carrier() {
-    L     = cp_part_l;
-    r_in  = cp_boss_od / 2 - 0.5;                 // 9.5, penetrates the boss
-    r_out = collar_od / 2 - collar_wall + 0.2;    // 12.7, penetrates the hoop
+    L = cp_part_l;
     hoop(0);
     hoop(L - collar_h);
+    // full shell boss for the brass tube
     difference() {
         cylinder(d = cp_boss_od, h = L);
         translate([0, 0, -0.1])
             cylinder(d = cp_boss_id, h = L + 0.2);
     }
-    for (a = rod_angles)
-        rotate([0, 0, a])
-            translate([(r_in + r_out) / 2, 0, L / 2])
-                cube([r_out - r_in, 2.5, L], center = true);
+    // vertical fins: boss -> hoops
+    for (a = [0, 120, 240])
+        fin(a, cp_boss_od / 2 - 0.5, collar_od / 2 - collar_wall + 0.2, 0, L);
+    // on-axis wire guide + fins to the boss
+    wire_guide(0, L);
+    for (a = [0, 180])
+        fin(a, wire_guide_od / 2 - 0.5, cp_boss_id / 2 + 0.5, 0, L);
 }
 
 // ---------------------------------------------------------------------------
 // Station 4: radio mount
-// Two hoops + two cradle walls that hold the RFM95W vertically (ANT pad up,
-// GND pad down) on the axis, plus a cable tie-down loop.
+// Two hoops + partial arcs + two cradle walls that hold the RFM95W vertically
+// (ANT pad up, GND pad down) on the axis, plus a cable tie-down loop.
 // ---------------------------------------------------------------------------
 module radio_mount() {
     L        = radio_part_l;
@@ -250,6 +292,7 @@ module radio_mount() {
     wall_out = collar_od / 2 - collar_wall + 0.2; // 12.7
     hoop(0);
     hoop(L - collar_h);
+    shell_arcs(0, L);
     // cradle walls (reach both hoops)
     for (x = [-1, 1])
         translate([x > 0 ? wall_in : -wall_out, -radio_wall_y, 0])
@@ -258,7 +301,7 @@ module radio_mount() {
     translate([-wall_out, -radio_wall_y, 0])
         cube([2 * wall_out, 2 * radio_wall_y, 2]);
     translate([0, 0, -0.1]) cylinder(d = 6, h = 3);
-    // cable tie-down loop on the lower hoop
+    // cable tie-down loop on the lower arc
     rotate([0, 0, 270])
         translate([10.75, 0, 2])
             difference() {
@@ -269,26 +312,17 @@ module radio_mount() {
 
 // ---------------------------------------------------------------------------
 // Station 5: antenna guide
-// Two hoops + three longitudinal rods + three hub collars on the axis that
-// hold the straight lambda/4 wire. Deliberately skeletal: thin guides only.
+// Two hoops + partial arcs + an on-axis wire guide tube, joined by vertical
+// fins to the arcs. Deliberately open: no full shell around the radiator.
 // ---------------------------------------------------------------------------
 module antenna_guide() {
-    L      = antenna_part_l;
-    levels = [0, L / 2, L - collar_h];
+    L = antenna_part_l;
     hoop(0);
     hoop(L - collar_h);
-    rods(0, L);
-    for (z = levels) {
-        translate([0, 0, z]) difference() {
-            cylinder(d = 4, h = 2);
-            translate([0, 0, -0.1]) cylinder(d = 1.6, h = 2.2);
-        }
-        for (a = rod_angles)
-            rotate([0, 0, a])
-                translate([0, 0, z + 1])
-                    rotate([0, 90, 0])
-                        cylinder(d = 2, h = rod_r);
-    }
+    shell_arcs(0, L);
+    wire_guide(0, L);
+    for (a = [arc_a_center, arc_b_center])
+        fin(a, wire_guide_od / 2 - 0.5, collar_od / 2 - collar_wall + 0.2, 0, L);
 }
 
 // ---------------------------------------------------------------------------
