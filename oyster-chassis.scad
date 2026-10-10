@@ -72,6 +72,16 @@ lambda_tenth   = lambda / 10;    // derived: ~34.6 mm
 radiator_len  = 86.0;            // design: straight lambda/4 wire on axis
 clearance_min = 50.0;            // design: minimum radiator clearance (>= lambda/10 ideal 80-100)
 
+// --- Joining shell (design) ---
+window_w     = 10.0;       // design: axial window width
+band_z       = [22.0, 205.0]; // design: foam/O-ring band positions on the OD
+band_w       = 3.0;        // design: band groove width
+band_depth   = 1.0;        // design: band groove depth
+grip_d       = 8.0;        // design: bottom finger-grip scallop diameter
+rib_th       = 2.5;        // design: rib thickness (axial)
+rib_w        = 2.0;        // design: rib width (radial/tangential)
+cap_l        = 18.0;       // design: removable service-cap depth
+
 // --- Antenna guide (design, skeletal: thin guides only) ---
 guide_r      = 12.0;   // design: cage radius (inside the 26.1 bore with clearance)
 guide_strut  = 1.6;    // design: strut / spoke thickness
@@ -104,6 +114,8 @@ total_l      = radiator_z1 + headroom;   // 357
 split_z      = cell_z1;                  // 89: joint in the plain region above the cell
 section_a_l  = split_z;                  // 0   -> 89
 section_b_l  = total_l - split_z;        // 89  -> 357
+
+shell_top    = radio_z1;                 // derived: solid shell ends at the feed (251)
 
 // --- Counterpoise sleeve carrier (design) ---
 sleeve_boss_od = 20.0;   // design: slides inside a 22 mm copper-pipe offcut (ID ~20.2)
@@ -167,9 +179,10 @@ module cell_cradle() {
                 cylinder(d = cradle_od, h = cell_l);
                 translate([0, 0, -0.1])
                     cylinder(d = cradle_bore, h = cell_l + 0.2);
-                // C-slot, opening toward +X
-                translate([cradle_od / 2, 0, (cell_l - 0.2) / 2])
-                    cube([cradle_od, cradle_slot, cell_l + 0.2], center = true);
+                // C-slot, opening toward +Y (kept clear of the wall ribs)
+                rotate([0, 0, 90])
+                    translate([cradle_od / 2, 0, cell_l / 2])
+                        cube([cradle_od, cradle_slot, cell_l + 2], center = true);
             }
             // bottom stop ring (annular shoulder the cell rests on)
             difference() {
@@ -250,10 +263,11 @@ module radio_mount() {
         // ANT lead hole at the top (on axis)
         translate([0, 0, bz - 2]) cylinder(d = 6, h = 2.2);
     }
-    // cable-bundle tie-down: a block with a 3 mm bore for a zip tie
-    translate([0, -(bt / 2 + wall + 2.5), 4]) {
+    // cable-bundle tie-down: a block with a 3 mm bore for a zip tie, let into
+    // the floor so it prints as one body
+    translate([0, -(bt / 2 + wall + 2.0), 4]) {
         difference() {
-            cube([12, 5, 7], center = true);
+            cube([12, 6, 7], center = true);
             rotate([90, 0, 0]) cylinder(d = 3, h = 7, center = true);
         }
     }
@@ -286,24 +300,104 @@ module antenna_guide() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Joining shell, ribs and service cap
+// ---------------------------------------------------------------------------
+
+// A foam / O-ring band groove: an annulus cutter that shaves the outer skin.
+module band_groove() {
+    difference() {
+        cylinder(d = chassis_od + 2, h = band_w, center = true);
+        cylinder(d = chassis_od - 2 * band_depth, h = band_w + 0.2, center = true);
+    }
+}
+
+// A radial rib from r_in to r_out at an absolute height z and angle.
+module rib(angle, z, r_in, r_out) {
+    rotate([0, 0, angle])
+        translate([(r_in + r_out) / 2, 0, z])
+            cube([r_out - r_in, rib_w, rib_th], center = true);
+}
+
+// Hollow outer shell spanning absolute z0 -> z1, with axial windows between the
+// rib angles, band grooves and the bottom finger grips. Solid only below the
+// feed; the antenna section above is left skeletal.
+module shell(z0, z1) {
+    translate([0, 0, z0])
+        difference() {
+            cylinder(d = chassis_od, h = z1 - z0);
+            translate([0, 0, -0.1])
+                cylinder(d = chassis_bore, h = z1 - z0 + 0.2);
+            // windows over the cell and Pico (angles clear of ribs and C-slot)
+            for (a = [30, 210, 330])
+                for (zc = [[cell_z0 + 8, cell_z1 - 6], [pico_z0 + 8, pico_z0 + 48]])
+                    if (zc[0] < z1 && zc[1] > z0)
+                        rotate([0, 0, a])
+                            translate([chassis_od / 2 - 0.5, 0, (zc[0] + zc[1]) / 2 - z0])
+                                cube([3, window_w, zc[1] - zc[0]], center = true);
+            // foam / O-ring band grooves
+            for (z = band_z)
+                if (z > z0 + band_w && z < z1 - band_w)
+                    translate([0, 0, z - z0]) band_groove();
+            // bottom finger grips
+            if (z0 < cap_h)
+                for (a = [0, 120, 240])
+                    rotate([0, 0, a])
+                        translate([chassis_od / 2, 0, 10])
+                            cylinder(d = grip_d, h = 14, center = true);
+        }
+}
+
+// Removable push-in service cap: a shallow cup holding the desiccant, pulled
+// with a hook through the cross-hole. Deliberately not bonded to the shell.
+module service_cap() {
+    co = chassis_bore - 0.4;
+    difference() {
+        cylinder(d = co, h = cap_l);
+        translate([0, 0, 2])
+            cylinder(d = co - 2 * chassis_wall, h = cap_l + 0.1);
+        // cross-hole for a removal hook
+        translate([0, 0, 3]) rotate([90, 0, 0])
+            cylinder(d = 3, h = co + 2, center = true);
+    }
+}
+
 // Full 357 mm stack, bottom (z=0) to top. Stations are added in later commits.
 module full_stack() {
-    translate([0, 0, cell_z0 - stop_ring_h]) cell_cradle();
-    translate([0, 0, pico_z0]) pico_bay();
-    translate([0, 0, sleeve_z0]) sleeve_boss();
-    translate([0, 0, radio_z0]) radio_mount();
-    translate([0, 0, radiator_z0]) antenna_guide();
+    section_a();
+    section_b();
 }
 
 module section_a() {
+    shell(0, split_z);
+    service_cap();
     translate([0, 0, cell_z0 - stop_ring_h]) cell_cradle();
+    // ribs: cradle -> shell (angles clear of the +Y C-slot and the windows)
+    for (a = [0, 150, 270])
+        for (z = [cell_z0 + 15, cell_z1 - 15])
+            rib(a, z, cradle_od / 2 - 0.6, chassis_bore / 2 + 0.2);
 }
 
 module section_b() {
+    shell(split_z, shell_top);
     translate([0, 0, pico_z0]) pico_bay();
     translate([0, 0, sleeve_z0]) sleeve_boss();
     translate([0, 0, radio_z0]) radio_mount();
     translate([0, 0, radiator_z0]) antenna_guide();
+    // ribs: Pico bay rails -> shell (rails are at x = +/-)
+    for (a = [0, 180])
+        for (z = [pico_z0 + 12, pico_z1 - 12])
+            rib(a, z, 12.1, chassis_bore / 2 + 0.2);
+    // ribs: sleeve boss -> shell
+    for (a = [0, 150, 270])
+        for (z = [sleeve_z0 + 15, sleeve_z1 - 15])
+            rib(a, z, sleeve_boss_od / 2 - 0.6, chassis_bore / 2 + 0.2);
+    // ribs: radio mount side walls -> shell
+    for (a = [0, 180])
+        rib(a, radio_z0 + 8, 9.2, chassis_bore / 2 + 0.2);
+    // ribs: antenna-guide struts -> shell top ring
+    for (a = [0, 120, 240])
+        rib(a, shell_top - 1, guide_r - 1.0, chassis_bore / 2 + 0.2);
 }
 
 // ---------------------------------------------------------------------------
