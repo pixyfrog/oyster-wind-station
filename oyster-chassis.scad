@@ -49,8 +49,13 @@ radio_l     = 16.0;  // measured: RFM95W length
 // --- Cell cradle (design) ---
 cradle_od   = 21.6;                 // design: snap-in thin C-sleeve outer diameter
 cradle_wall = 1.6;                  // design: thin wall so the snap can flex
-cradle_grip = cell_d + 0.4;         // derived: 18.8 mm grip bore
-cradle_slot = 0.70 * cell_d;        // derived: slot width ~70 % of cell diameter
+cradle_bore = cradle_od - 2*cradle_wall; // derived: 18.4 mm resting grip bore
+                                    //   (the C-slot lets the sleeve flex past the
+                                    //    18.4 cell; cradle_grip is the flexed entry)
+cradle_grip  = cell_d + 0.4;        // derived: 18.8 mm flexed grip / snap entry
+cradle_slot  = 0.70 * cell_d;       // derived: slot width ~70 % of cell diameter
+stop_ring_h  = 1.5;                 // design: bottom stop-ring shoulder, cell rests here
+stop_hole_d  = cell_d - 6.0;        // derived: 12.4 mm stop-ring hole (3 mm shoulder)
 
 // --- RF / antenna (physics, do not change) ---
 freq_mhz      = 868;              // frozen: LoRa centre frequency
@@ -97,6 +102,8 @@ assert(chassis_bore > cell_d,
        "chassis bore must clear the cell diameter");
 assert(chassis_bore > cell_hold_w,
        "chassis bore must clear the cell-in-cradle width");
+assert(cradle_od < chassis_bore,
+       "cell cradle outer must clear the chassis bore");
 assert(sqrt(pico_bay_t * pico_bay_t + pico_w * pico_w) < chassis_bore,
        "Pico cross-section diagonal must clear the chassis bore");
 assert(cell_z1 <= pico_z0,
@@ -120,3 +127,60 @@ echo(str("lambda/4        = ", lambda_quarter, " mm  (radiator ", radiator_len, 
 echo(str("lambda/10       = ", lambda_tenth, " mm  (min clearance ", clearance_min, " mm)"));
 echo(str("radiator->cell  = ", clearance_cell, " mm"));
 echo(str("radiator->Pico  = ", clearance_pico, " mm"));
+
+// ---------------------------------------------------------------------------
+// Geometry
+// ---------------------------------------------------------------------------
+
+// Snap-in thin C-sleeve that holds the 18650. The thin 1.6 mm wall is what lets
+// the C flex; a thick ring could not. A bottom stop ring catches the cell so it
+// cannot slide down. Standalone the module is built with the cell seat at
+// stop_ring_h and spans z 0 -> cell_l; the full stack shifts it down by
+// stop_ring_h so the seat lands exactly at cell_z0.
+module cell_cradle() {
+    difference() {
+        union() {
+            // sleeve shell
+            difference() {
+                cylinder(d = cradle_od, h = cell_l);
+                translate([0, 0, -0.1])
+                    cylinder(d = cradle_bore, h = cell_l + 0.2);
+                // C-slot, opening toward +X
+                translate([cradle_od / 2, 0, (cell_l - 0.2) / 2])
+                    cube([cradle_od, cradle_slot, cell_l + 0.2], center = true);
+            }
+            // bottom stop ring (annular shoulder the cell rests on)
+            difference() {
+                cylinder(d = cradle_od, h = stop_ring_h);
+                translate([0, 0, -0.1])
+                    cylinder(d = stop_hole_d, h = stop_ring_h + 0.2);
+            }
+        }
+    }
+}
+
+// Full 357 mm stack, bottom (z=0) to top. Stations are added in later commits.
+module full_stack() {
+    translate([0, 0, cell_z0 - stop_ring_h]) cell_cradle();
+}
+
+module section_a() {
+    translate([0, 0, cell_z0 - stop_ring_h]) cell_cradle();
+}
+
+module section_b() {
+}
+
+// ---------------------------------------------------------------------------
+// Numeric part dispatch (integers only)
+// ---------------------------------------------------------------------------
+if (part == 0) {
+    full_stack();
+} else if (part == 1) {
+    cell_cradle();
+} else if (part == 2) {
+    section_a();
+} else if (part == 3) {
+    section_b();
+}
+
