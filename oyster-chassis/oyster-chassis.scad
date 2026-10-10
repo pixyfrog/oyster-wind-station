@@ -78,7 +78,7 @@ cp_boss_od = 20.0;   // design: boss OD, slides inside a 22 mm copper-pipe offcu
 cp_boss_id = 16.0;   // design: hollow boss bore
 
 // --- Radio mount feature (design) ---
-radio_wall_y = 2.5;  // design: cradle wall half-depth
+radio_slot_t = 4.0;  // design: board slot depth (board + components)
 
 // --- RF / antenna (physics, do not change) ---
 freq_mhz       = 868;              // frozen: LoRa centre frequency
@@ -274,24 +274,25 @@ module counterpoise_carrier() {
 
 // ---------------------------------------------------------------------------
 // Station 4: radio mount
-// Two hoops + partial arcs + two cradle walls that hold the RFM95W vertically
-// (ANT pad up, GND pad down) on the axis, plus a cable tie-down loop.
+// Like the Pico bay: two hoops + partial arcs (90 degree arc at the bottom) +
+// a flat table with two locating rails that receive the RFM95W board. Height
+// stays 16 mm per spec. A cable tie-down loop and an on-axis lead hole.
 // ---------------------------------------------------------------------------
 module radio_mount() {
     L        = radio_part_l;
-    wall_in  = radio_w / 2 + 0.2;                 // 8.2
-    wall_out = collar_od / 2 - collar_wall + 0.2; // 12.7
+    deck_w   = collar_od - 2 * collar_wall + 0.4; // reaches both hoops
+    rail_in  = radio_w / 2 + 0.2;                 // 8.2
+    rail_out = deck_w / 2;                        // 12.7
     hoop(0);
     hoop(L - collar_h);
-    shell_arcs(0, L);
-    // cradle walls (reach both hoops)
+    shell_arcs(0, L, 270);        // 90 degree arc below the board table
+    // table (also a longitudinal member)
+    translate([-deck_w / 2, -(radio_slot_t / 2 + pico_deck_t), 0])
+        cube([deck_w, pico_deck_t, L]);
+    // two locating rails on the table
     for (x = [-1, 1])
-        translate([x > 0 ? wall_in : -wall_out, -radio_wall_y, 0])
-            cube([wall_out - wall_in, 2 * radio_wall_y, L]);
-    // floor with a GND lead hole on axis
-    translate([-wall_out, -radio_wall_y, 0])
-        cube([2 * wall_out, 2 * radio_wall_y, 2]);
-    translate([0, 0, -0.1]) cylinder(d = 6, h = 3);
+        translate([x > 0 ? rail_in : -rail_out, -radio_slot_t / 2 - 1, 0])
+            cube([rail_out - rail_in, radio_slot_t + 1, L]);
     // cable tie-down loop on the lower arc
     rotate([0, 0, 270])
         translate([10.75, 0, 2])
