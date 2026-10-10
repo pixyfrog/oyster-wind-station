@@ -57,6 +57,13 @@ cradle_slot  = 0.70 * cell_d;       // derived: slot width ~70 % of cell diamete
 stop_ring_h  = 1.5;                 // design: bottom stop-ring shoulder, cell rests here
 stop_hole_d  = cell_d - 6.0;        // derived: 12.4 mm stop-ring hole (3 mm shoulder)
 
+// --- Pico bay (design) ---
+pico_slot_w  = pico_w + 0.4;        // derived: 21.4 mm slot width
+pico_slot_t  = pico_bay_t + 0.2;    // derived: 6.2 mm slot depth (no Dupont stack)
+pico_rail    = 2.0;                 // design: side-rail thickness
+pico_floor_t = 2.0;                 // design: floor thickness
+pico_usb_gap = 4.0;                 // design: clear gap at the bottom for the USB-C port
+
 // --- RF / antenna (physics, do not change) ---
 freq_mhz      = 868;              // frozen: LoRa centre frequency
 lambda        = 300 / freq_mhz * 1000; // derived: ~345.6 mm at 868 MHz
@@ -159,9 +166,38 @@ module cell_cradle() {
     }
 }
 
+// Pico bay: an open tray with two side rails and a floor, USB-C facing the
+// bottom cap (open at local z 0 -> pico_usb_gap). Wires leave axially through
+// reliefs near the top. Local z origin = pico_z0.
+module pico_bay() {
+    sw   = pico_slot_w;
+    st   = pico_slot_t;
+    rail = pico_rail;
+    ft   = pico_floor_t;
+    z0   = pico_usb_gap;
+    z1   = z0 + pico_l;
+    difference() {
+        union() {
+            // floor under the board, centred on the axis
+            translate([-(sw + 2 * rail) / 2, -st / 2 - ft / 2, z0])
+                cube([sw + 2 * rail, ft, z1 - z0]);
+            // two side rails, centred at x = +/- (sw/2 + rail/2)
+            for (x = [-1, 1])
+                translate([x * (sw / 2 + rail / 2) - rail / 2, -st / 2, z0])
+                    cube([rail, st, z1 - z0]);
+        }
+        // axial wire reliefs near the top of each rail
+        for (x = [-1, 1])
+            translate([x * (sw / 2 + rail / 2), 0, z1 - 6])
+                rotate([90, 0, 0])
+                    cylinder(d = 3.5, h = st + 2 * rail + 2, center = true);
+    }
+}
+
 // Full 357 mm stack, bottom (z=0) to top. Stations are added in later commits.
 module full_stack() {
     translate([0, 0, cell_z0 - stop_ring_h]) cell_cradle();
+    translate([0, 0, pico_z0]) pico_bay();
 }
 
 module section_a() {
@@ -169,6 +205,7 @@ module section_a() {
 }
 
 module section_b() {
+    translate([0, 0, pico_z0]) pico_bay();
 }
 
 // ---------------------------------------------------------------------------
