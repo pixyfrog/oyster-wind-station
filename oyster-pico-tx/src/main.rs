@@ -45,7 +45,7 @@ const DEBUG_USB: bool = true;
 const USE_PLL_CLOCK: bool = true;
 const SUB_SAMPLES_PER_WINDOW: u32 = 2; // — 6 for bench, 200 for real (600 s / 3 s)
 const WINDOW_S: u16 = (SUB_SAMPLES_PER_WINDOW * 3) as u16; // 3s per sub_sample
-const K_CM_PER_PULSE: u32 = 5; // calibrate on site
+const K_CM_PER_PULSE: u32 = 33; // calibrate on site
 const LORA_SF: u8 = 9; // frozen range is 7 .. 9
 const LORA_MODEM_CONFIG2: u8 = (LORA_SF << 4 ) | 0x04;  //SF in bit 7..4, paylod CRC on
 const REG_OP_MODE: u8 = 0x01;
@@ -350,7 +350,7 @@ fn speed_cms(pulses: u32, window_ms: u32) -> u32 {
     if window_s == 0 {
         return 0;
     }
-    (pulses * K_CM_PER_PULSE) / window_s
+    (pulses * K_CM_PER_PULSE) / (window_s * 10)
 }
 //One measurement window, hold the numbers has subsample arrives
 struct Window {
