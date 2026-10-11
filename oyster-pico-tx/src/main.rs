@@ -273,7 +273,25 @@ fn main() -> ! {
                 3700,
                 sequence,
             );
-            radio_send(&mut spi, &mut cs, &mut delay, &packet);
+            radio_start_tx(&mut spi, &mut cs, &packet);
+            // Wait for TxDone in 10 ms slices so usb_dev.poll() runs often
+            // enough to keep the USB stack enumerated. The total wait bound is
+            // unchanged: 50 slices x 10 ms = the old 500 ms, so a missed flag
+            // still cannot hang the station.
+            let mut waited_ms = 0u32;
+            while waited_ms < 500 {
+                if DEBUG_USB {
+                    if let (Some(dev), Some(ser)) = (usb_dev.as_mut(), serial.as_mut()) {
+                        dev.poll(&mut [ser]);
+                    }
+                }
+                delay.delay_ms(10);
+                waited_ms += 10;
+                if read_register(&mut spi, &mut cs, REG_IRQ_FLAGS) & IRQ_TX_DONE != 0 {
+                    break;
+                }
+            }
+            radio_tx_finish(&mut spi, &mut cs);
 
             if DEBUG_USB {
                 if let Some(ser) = serial.as_mut() {
@@ -402,10 +420,11 @@ fn radio_init_tx(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin) {
     write_register(spi, cs, REG_OP_MODE, MODE_SLEEP);
 }
 
-fn radio_send(
+// Start a transmit: load the FIFO and enter TX, then return immediately so the
+// caller can keep servicing USB while the radio works. radio_tx_finish() ends it.
+fn radio_start_tx(
     spi: &mut impl SpiBus<u8>,
     cs: &mut impl OutputPin,
-    delay: &mut cortex_m::delay::Delay,
     payload: &[u8],
 ) {
     write_register(spi, cs, REG_OP_MODE, MODE_STANDBY);
@@ -413,13 +432,10 @@ fn radio_send(
     write_register(spi, cs, REG_PAYLOAD_LENGTH, payload.len() as u8);
     write_fifo(spi, cs, payload);
     write_register(spi, cs, REG_OP_MODE, MODE_TX);  
-    for _ in 0..500 {
-        if read_register(spi, cs, REG_IRQ_FLAGS) & IRQ_TX_DONE != 0 {
-            break;
-        }
-        delay.delay_ms(1);
-    }
+}
 
+// End a transmit: clear the IRQ flags and return the radio to sleep.
+fn radio_tx_finish(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin) {
     write_register(spi, cs, REG_IRQ_FLAGS, 0xFF);     // clear all IRQ flags
     write_register(spi, cs, REG_OP_MODE, MODE_SLEEP); // radio naps between packets
 }
