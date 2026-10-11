@@ -17,7 +17,7 @@ use bsp::hal::{
     xosc::setup_xosc_blocking,
 };
 
-use embedded_hal::digital::{InputPin, OutputPin};
+use embedded_hal::digital::OutputPin;
 use embedded_hal::spi::SpiBus;
 use bsp::hal::fugit::ExtU32;
 use bsp::hal::timer::{Alarm, Alarm0, Timer};
@@ -39,11 +39,11 @@ const PACKET_VERSION: u8 = 0x02;
 // false = field build: no USB setup at all. The USB controller is left in
 //         reset, because with clk_usb stopped any access to its registers
 //         stalls the AHB and hangs the core before the radio is driven.
-const DEBUG_USB: bool = false;
+const DEBUG_USB: bool = true;
 // true  = full clock tree (PLL_SYS 125 MHz + PLL_USB 48 MHz).
 // false = crystal only, no PLLs — they are the dominant current cost.
-const USE_PLL_CLOCK: bool = false;
-const SUB_SAMPLES_PER_WINDOW: u32 = 200; // — 6 for bench, 200 for real (600 s / 3 s)
+const USE_PLL_CLOCK: bool = true;
+const SUB_SAMPLES_PER_WINDOW: u32 = 2; // — 6 for bench, 200 for real (600 s / 3 s)
 const WINDOW_S: u16 = (SUB_SAMPLES_PER_WINDOW * 3) as u16; // 3s per sub_sample
 const K_CM_PER_PULSE: u32 = 5; // calibrate on site
 const LORA_SF: u8 = 9; // frozen range is 7 .. 9
@@ -169,7 +169,7 @@ fn main() -> ! {
     let mut cs = pins.gpio17.into_push_pull_output();
     let mut rst = pins.gpio20.into_push_pull_output();
     // ---- anemometer pulse input ----
-    let mut anemometer = pins.gpio22.into_pull_up_input();
+    let anemometer = pins.gpio22.into_pull_up_input();
     anemometer.set_interrupt_enabled(Interrupt::EdgeLow, true);
     critical_section::with(|cs| ANEMOMETER.borrow(cs).replace(Some(anemometer)));
     unsafe { pac::NVIC::unmask(pac::Interrupt::IO_IRQ_BANK0) };
@@ -326,28 +326,6 @@ fn read_register(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin, address: u8
     let _ = spi.transfer_in_place(&mut buf);
     cs.set_high().unwrap();
     buf[1]
-}
-// whatch teh pulse line for 'gate_ms' millseconds and count falling edges.
- // The line stays HIGH through the pull-up; each pulse pulls it LOW; so a 
- // HIGH -> LOW change is one pulse.
-fn count_pulses_for(
-    pin: &mut impl InputPin,
-    delay: &mut cortex_m::delay::Delay,
-    gate_ms: u32,
-) -> u32 {
-    let mut previous = pin.is_high().unwrap();
-    let mut pulses: u32 = 0;
-
-    for _ in 0..gate_ms {
-        delay.delay_ms(1);
-        let now = pin.is_high().unwrap();
-        if previous && !now {
-            pulses += 1;
-        }
-        previous = now;
-    }
-
-    pulses
 }
 fn speed_cms(pulses: u32, window_ms: u32) -> u32 {
     let window_s = window_ms / 1000;
