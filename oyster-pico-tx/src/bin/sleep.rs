@@ -8,8 +8,9 @@ use rp_pico as bsp;
 use bsp::hal::{
     clocks::{init_clocks_and_plls, Clock, ClockSource, ClocksManager},
     fugit::RateExtU32,
-    gpio::{FunctionSPI, Pins},
+    gpio::Pins,
     pac,
+    rosc::RingOscillator,
     sio::Sio,
     spi::Spi,
     watchdog::Watchdog,
