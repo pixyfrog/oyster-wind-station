@@ -70,14 +70,16 @@ top_teeth       = [90, 210, 330];  // top hoop teeth (one marks the 90 deg arc)
 bottom_teeth    = [30, 150, 270];  // bottom hoop teeth (complementary)
 
 // --- On-axis wire guide (design) ---
-wire_guide_od   = 6.0; // design: guide tube OD
-wire_guide_bore = 1.6; // design: guide bore for the wire
+wire_guide_od   = 6.0;  // design: guide tube OD
+wire_guide_bore = 2.2;  // design: guide bore (slack for FDM hole shrinkage, accepts a pin)
+guide_clear     = 10.0; // design: guide/fin end offset from a part end (entry clearance)
 
 // --- Battery cradle feature (design) ---
 // The part receives a rectangular (purchased) cradle, stuck on a flat table.
 battery_table_w = 18.0;  // design: flat table width (x)
 battery_table_y = -8.5;  // design: table inner face (cradle bonds here)
 battery_table_t = 2.5;   // design: table thickness
+battery_hoop_gap = 76.0; // design: clear axial gap between the two hoops (case is 75.8 long)
 
 // --- Pico bay feature (design) ---
 pico_deck_t = 2.0;   // design: deck thickness
@@ -90,6 +92,7 @@ cp_boss_id = 16.0;   // design: hollow boss bore
 
 // --- Radio mount feature (design) ---
 radio_slot_t = 4.0;  // design: board slot depth (board + components)
+radio_clear  = 5.0;  // design: clearance above and below the RFM95W board
 
 // --- RF / antenna (physics, do not change) ---
 freq_mhz       = 868;              // frozen: LoRa centre frequency
@@ -99,26 +102,27 @@ lambda_tenth   = lambda / 10;      // derived: ~34.6 mm
 radiator_len   = 86.0;             // design: straight lambda/4 wire on axis
 clearance_min  = 50.0;             // design: minimum radiator clearance
 
+// --- Printed part lengths (stations, bottom to top) ---
+battery_part_l = battery_hoop_gap + 2 * collar_h; // 84  (station 1)
+pico_part_l    = 66.0;                            // 66  (station 2)
+cp_part_l      = 90.0;                            // 90  (station 3)
+radio_part_l   = radio_l + 2 * radio_clear;       // 26  (station 4)
+antenna_part_l = radiator_len;                    // 86  (station 5)
+
 // --- Station layout, bottom (z=0) to top (measured/derived stack-up) ---
 cap_h        = 20.0;                     // service cap + desiccant space
 cell_z0      = cap_h;                    // 20
-pico_z0      = cell_z0 + cell_l;         // 89
-cp_z0        = pico_z0 + 56.0;           // 145
-radio_z0     = cp_z0 + 90.0;             // 235
-radiator_z0  = radio_z0 + radio_l;       // 251
-radiator_z1  = radiator_z0 + radiator_len; // 337
+pico_z0      = cell_z0 + battery_part_l; // 104
+cp_z0        = pico_z0 + pico_part_l;    // 170
+radio_z0     = cp_z0 + cp_part_l;        // 260
+radiator_z0  = radio_z0 + radio_part_l;  // 286
+radiator_z1  = radiator_z0 + radiator_len; // 372
 headroom     = 20.0;                     // headroom to the sealed top
-total_l      = radiator_z1 + headroom;   // 357
-
-battery_part_l = cell_l;                 // 69  (station 1)
-pico_part_l    = 56.0;                   // 56  (station 2)
-cp_part_l      = 90.0;                   // 90  (station 3)
-radio_part_l   = radio_l;                // 16  (station 4)
-antenna_part_l = radiator_len;           // 86  (station 5)
+total_l      = radiator_z1 + headroom;   // 392
 
 // --- Derived clearances: radiator start to the hottest conductors below it ---
-clearance_cell = radiator_z0 - (cell_z0 + cell_l); // 251 - 89  = 162
-clearance_pico = radiator_z0 - cp_z0;              // 251 - 145 = 106
+clearance_cell = radiator_z0 - (cell_z0 + battery_part_l); // 286 - 104 = 182
+clearance_pico = radiator_z0 - cp_z0;                      // 286 - 170 = 116
 
 // ---------------------------------------------------------------------------
 // Assertions: encode the physical rules. Do not loosen to make a render pass.
@@ -131,8 +135,8 @@ assert(chassis_bore > cell_d,
        "chassis bore must clear the cell diameter");
 assert(sqrt(pico_bay_t * pico_bay_t + pico_w * pico_w) < chassis_bore,
        "Pico cross-section diagonal must clear the chassis bore");
-assert(pico_z0 >= cell_z0 + cell_l,
-       "cell and Pico must not overlap axially (they sit in series)");
+assert(pico_z0 >= cell_z0 + battery_part_l,
+       "battery cradle and Pico must not overlap axially (they sit in series)");
 assert(clearance_cell >= clearance_min,
        "radiator clearance to the cell must be >= clearance_min");
 assert(clearance_pico >= clearance_min,
@@ -317,10 +321,10 @@ module counterpoise_carrier() {
         // vertical fins: boss -> hoops
         for (a = [0, 120, 240])
             fin(a, cp_boss_od / 2 - 0.5, collar_od / 2 - collar_wall + 0.2, 0, L);
-        // on-axis wire guide + fins to the boss
-        wire_guide(0, L);
+        // on-axis wire guide + fins to the boss (offset 1 cm from the top end)
+        wire_guide(0, L - guide_clear);
         for (a = [0, 180])
-            fin(a, wire_guide_od / 2 - 0.5, cp_boss_id / 2 + 0.5, 0, L);
+            fin(a, wire_guide_od / 2 - 0.5, cp_boss_id / 2 + 0.5, 0, L - guide_clear);
     }
 }
 
@@ -367,9 +371,9 @@ module antenna_guide() {
         hoop(0);
         hoop(L - collar_h);
         shell_arcs(0, L);
-        wire_guide(0, L);
+        wire_guide(guide_clear, L);
         for (a = [arc_a_center, arc_b_center])
-            fin(a, wire_guide_od / 2 - 0.5, collar_od / 2 - collar_wall + 0.2, 0, L);
+            fin(a, wire_guide_od / 2 - 0.5, collar_od / 2 - collar_wall + 0.2, guide_clear, L);
     }
 }
 
