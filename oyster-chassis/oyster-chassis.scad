@@ -270,7 +270,7 @@ module battery_cradle() {
     apply_keys(L, key_bottom = false, key_top = true) { // bottom end is free
         hoop(0);
         hoop(L - collar_h);
-        shell_arcs(0, L, 270);         // 90 degree arc on the bottom
+        arc_wall(270, arc_a_sweep, 0, L); // 90 degree arc on the bottom only
         // flat table on the 90 degree arc (vertical plate -> prints as a wall)
         translate([-tw / 2, ty - tt, 0])
             cube([tw, tt, L]);
