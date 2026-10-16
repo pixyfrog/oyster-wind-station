@@ -10,6 +10,7 @@ critical-section = "1"
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
 embedded-hal = "1.0.0"
+embedded_hal_0_2 = { package = "embedded-hal", version = "0.2.7", features = ["unproven"] }
 panic-halt = "1"
 rp-pico = "0.9"
 usb-device = "0.3"

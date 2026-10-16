@@ -17,6 +17,8 @@ use bsp::hal::{
     xosc::setup_xosc_blocking,
 };
 
+use bsp::hal::adc::{Adc, AdcPin};
+use embedded_hal_0_2::adc::OneShot;
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::SpiBus;
 use bsp::hal::fugit::ExtU32;
@@ -55,6 +57,10 @@ const FLAG_WINDOW_TRUNCATED: u8 = 1 << 2;  // bit2: transmitted before a full wi
 // An 18650 still has useful capacity at 3.4 V, and a telemetry field on an
 // unattended station should warn early rather than report a health signal late.
 const BATT_LOW_MV: u16 = 3400;
+// VSYS reaches ADC3 (GP29, "voltage_monitor") through an on-board divider.
+// Measured on this clone: 1 MOhm / 100 kOhm (~11:1), ~9.02 mV per count.
+// Scaled by 1000 to stay integer; recalibrate against a multimeter.
+const VSYS_MV_PER_COUNT_X1000: u32 = 9023;
 const REG_OP_MODE: u8 = 0x01;
 const REG_FRF_MSB: u8 = 0x06;
 const REG_FRF_MID: u8 = 0x07;
@@ -130,7 +136,9 @@ fn main() -> ! {
             // its full current even when no clock is routed from it. The PLL power
             // register 0x2d is PD | DSMPD | POSTDIVPD | VCOPD from the SDK's pll_deinit.
             clocks.usb_clock.disable();
-            clocks.adc_clock.disable();
+            // Part C: the ADC must stay usable to read VSYS, so keep clk_adc
+            // alive — no PLLs in the field, so run it straight off the crystal.
+            clocks.adc_clock.configure_clock(&xosc, rp_pico::XOSC_CRYSTAL_FREQ.Hz()).unwrap();
             pac.PLL_SYS.pwr().write(|w| unsafe { w.bits(0x2d) });
             pac.PLL_USB.pwr().write(|w| unsafe { w.bits(0x2d) });
             RingOscillator::new(pac.ROSC).initialize().disable();
@@ -180,6 +188,10 @@ fn main() -> ! {
     anemometer.set_interrupt_enabled(Interrupt::EdgeLow, true);
     critical_section::with(|cs| ANEMOMETER.borrow(cs).replace(Some(anemometer)));
     unsafe { pac::NVIC::unmask(pac::Interrupt::IO_IRQ_BANK0) };
+
+    // ---- VSYS battery sense: ADC3 / GP29 ("voltage_monitor") ----
+    let mut adc = Adc::new(pac.ADC, &mut pac.RESETS);
+    let mut vsys_pin = AdcPin::new(pins.gpio29).unwrap();
 
     let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
     let mut alarm = timer.alarm_0().unwrap();
@@ -279,12 +291,29 @@ fn main() -> ! {
                 }
             }
 
-            let battery_mv: u16 = 3700;
+            // Read VSYS: discard the first conversion (the ADC clock is gated
+            // during wfi and the first result after it returns can be stale),
+            // then average the next eight.
+            let _: u16 = adc.read(&mut vsys_pin).unwrap_or(0);
+            let mut vsum = 0u32;
+            for _ in 0..8 {
+                let sample: u16 = adc.read(&mut vsys_pin).unwrap_or(0);
+                vsum += sample as u32;
+            }
+            let vraw = (vsum / 8) as u16;
+            // Rail or zero means the sense path is broken: fail loud, not quiet.
+            let batt_valid = vraw != 0 && vraw < 4095;
+            let battery_mv: u16 = if batt_valid {
+                ((vraw as u32 * VSYS_MV_PER_COUNT_X1000) / 1000) as u16
+            } else {
+                0
+            };
+
             let mut flags = 0u8;
             if sensor_seen_high {
                 flags |= FLAG_SENSOR_OK;
             }
-            if battery_mv < BATT_LOW_MV {
+            if !batt_valid || battery_mv < BATT_LOW_MV {
                 flags |= FLAG_BATT_LOW;
             }
             if sub_samples < SUB_SAMPLES_PER_WINDOW {
