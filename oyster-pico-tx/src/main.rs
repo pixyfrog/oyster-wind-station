@@ -17,8 +17,7 @@ use bsp::hal::{
     xosc::setup_xosc_blocking,
 };
 
-use bsp::hal::adc::{Adc, AdcPin};
-use embedded_hal_0_2::adc::OneShot;
+use bsp::hal::adc::AdcPin;
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::SpiBus;
 use bsp::hal::fugit::ExtU32;
@@ -61,6 +60,10 @@ const BATT_LOW_MV: u16 = 3400;
 // Measured on this clone: 1 MOhm / 100 kOhm (~11:1), ~9.02 mV per count.
 // Scaled by 1000 to stay integer; recalibrate against a multimeter.
 const VSYS_MV_PER_COUNT_X1000: u32 = 9023;
+const VSYS_ADC_CHANNEL: u8 = 3; // GP29 / ADC3
+// NOTE: the on-board ADC on this clone only comes ready with a 48 MHz clk_adc
+// (PLL_USB). The field build has no PLLs, so it does not measure the pack and
+// reports "not measured" (batt_mv 0, batt_low 0); the bench build reads it.
 const REG_OP_MODE: u8 = 0x01;
 const REG_FRF_MSB: u8 = 0x06;
 const REG_FRF_MID: u8 = 0x07;
@@ -136,9 +139,7 @@ fn main() -> ! {
             // its full current even when no clock is routed from it. The PLL power
             // register 0x2d is PD | DSMPD | POSTDIVPD | VCOPD from the SDK's pll_deinit.
             clocks.usb_clock.disable();
-            // Part C: the ADC must stay usable to read VSYS, so keep clk_adc
-            // alive — no PLLs in the field, so run it straight off the crystal.
-            clocks.adc_clock.configure_clock(&xosc, rp_pico::XOSC_CRYSTAL_FREQ.Hz()).unwrap();
+            clocks.adc_clock.disable();
             pac.PLL_SYS.pwr().write(|w| unsafe { w.bits(0x2d) });
             pac.PLL_USB.pwr().write(|w| unsafe { w.bits(0x2d) });
             RingOscillator::new(pac.ROSC).initialize().disable();
@@ -190,8 +191,12 @@ fn main() -> ! {
     unsafe { pac::NVIC::unmask(pac::Interrupt::IO_IRQ_BANK0) };
 
     // ---- VSYS battery sense: ADC3 / GP29 ("voltage_monitor") ----
-    let mut adc = Adc::new(pac.ADC, &mut pac.RESETS);
-    let mut vsys_pin = AdcPin::new(pins.gpio29).unwrap();
+    // Configure the pad. clk_adc is only up in the bench build, so only bring
+    // the ADC up there; the field build leaves it down and does not measure.
+    let _vsys_pin = AdcPin::new(pins.gpio29).unwrap();
+    if USE_PLL_CLOCK {
+        let _ = adc_bringup(&pac.RESETS, &pac.ADC);
+    }
 
     let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
     let mut alarm = timer.alarm_0().unwrap();
@@ -291,29 +296,27 @@ fn main() -> ! {
                 }
             }
 
-            // Read VSYS: discard the first conversion (the ADC clock is gated
-            // during wfi and the first result after it returns can be stale),
-            // then average the next eight.
-            let _: u16 = adc.read(&mut vsys_pin).unwrap_or(0);
-            let mut vsum = 0u32;
-            for _ in 0..8 {
-                let sample: u16 = adc.read(&mut vsys_pin).unwrap_or(0);
-                vsum += sample as u32;
-            }
-            let vraw = (vsum / 8) as u16;
-            // Rail or zero means the sense path is broken: fail loud, not quiet.
-            let batt_valid = vraw != 0 && vraw < 4095;
-            let battery_mv: u16 = if batt_valid {
-                ((vraw as u32 * VSYS_MV_PER_COUNT_X1000) / 1000) as u16
+            // VSYS has three states inside the frozen layout:
+            //   batt_mv 0, batt_low 0  -> not measured by design (field build)
+            //   batt_mv 0, batt_low 1  -> sense fault (a read that should have
+            //                             happened, in the bench build, failed)
+            //   batt_mv N, batt_low = N < BATT_LOW_MV
+            let (battery_mv, batt_low_set) = if USE_PLL_CLOCK {
+                let (mv, ok) = sample_vsys(&pac.ADC);
+                if ok {
+                    (mv, mv < BATT_LOW_MV)
+                } else {
+                    (0u16, true)
+                }
             } else {
-                0
+                (0u16, false)
             };
 
             let mut flags = 0u8;
             if sensor_seen_high {
                 flags |= FLAG_SENSOR_OK;
             }
-            if !batt_valid || battery_mv < BATT_LOW_MV {
+            if batt_low_set {
                 flags |= FLAG_BATT_LOW;
             }
             if sub_samples < SUB_SAMPLES_PER_WINDOW {
@@ -450,6 +453,74 @@ fn wait_bounded<B, P>(
             break;
         }
     }
+}
+// ---- VSYS ADC (bench build only) ----
+// The on-board ADC only comes ready with a 48 MHz clk_adc from PLL_USB, which
+// the field build does not run. All waits are bounded, so a dead clock can
+// never hang the station.
+
+fn adc_bringup(resets: &pac::RESETS, adc: &pac::ADC) -> bool {
+    resets.reset().modify(|_, w| w.adc().set_bit());
+    cortex_m::asm::delay(16);
+    resets.reset().modify(|_, w| w.adc().clear_bit());
+    let mut spins = 100_000u32;
+    while !resets.reset_done().read().adc().bit_is_set() {
+        if spins == 0 {
+            return false;
+        }
+        spins -= 1;
+    }
+    adc.cs().modify(|_, w| w.en().set_bit());
+    let mut spins = 100_000u32;
+    while !adc.cs().read().ready().bit_is_set() {
+        if spins == 0 {
+            return false;
+        }
+        spins -= 1;
+    }
+    true
+}
+
+fn read_vsys_raw(adc: &pac::ADC) -> Option<u16> {
+    let mut spins = 100_000u32;
+    while !adc.cs().read().ready().bit_is_set() {
+        if spins == 0 {
+            return None;
+        }
+        spins -= 1;
+    }
+    adc.cs().modify(|_, w| unsafe {
+        w.ainsel().bits(VSYS_ADC_CHANNEL).start_once().set_bit()
+    });
+    let mut spins = 100_000u32;
+    while !adc.cs().read().ready().bit_is_set() {
+        if spins == 0 {
+            return None;
+        }
+        spins -= 1;
+    }
+    Some(adc.result().read().result().bits())
+}
+
+// Discard the first conversion, average the next eight, convert to mV.
+fn sample_vsys(adc: &pac::ADC) -> (u16, bool) {
+    let _ = read_vsys_raw(adc);
+    let mut sum = 0u32;
+    let mut n = 0u32;
+    for _ in 0..8 {
+        if let Some(r) = read_vsys_raw(adc) {
+            sum += r as u32;
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return (0, false);
+    }
+    let raw = (sum / n) as u16;
+    if raw == 0 || raw >= 4095 {
+        return (0, false);
+    }
+    (((raw as u32 * VSYS_MV_PER_COUNT_X1000) / 1000) as u16, true)
 }
 fn speed_cms(pulses: u32, window_ms: u32) -> u32 {
     let window_s = window_ms / 1000;
