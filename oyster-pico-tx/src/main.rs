@@ -17,7 +17,7 @@ use bsp::hal::{
     xosc::setup_xosc_blocking,
 };
 
-use embedded_hal::digital::OutputPin;
+use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::SpiBus;
 use bsp::hal::fugit::ExtU32;
 use bsp::hal::timer::{Alarm, Alarm0, Timer};
@@ -48,6 +48,13 @@ const WINDOW_S: u16 = (SUB_SAMPLES_PER_WINDOW * 3) as u16; // 3s per sub_sample
 const K_CM_PER_PULSE: u32 = 33; // calibrate on site
 const LORA_SF: u8 = 9; // frozen range is 7 .. 9
 const LORA_MODEM_CONFIG2: u8 = (LORA_SF << 4 ) | 0x04;  //SF in bit 7..4, paylod CRC on
+// Flags byte (packet byte 3).
+const FLAG_SENSOR_OK: u8 = 1 << 0;         // bit0: anemometer line read high at least once
+const FLAG_BATT_LOW: u8 = 1 << 1;          // bit1: batt_mv below BATT_LOW_MV
+const FLAG_WINDOW_TRUNCATED: u8 = 1 << 2;  // bit2: transmitted before a full window
+// An 18650 still has useful capacity at 3.4 V, and a telemetry field on an
+// unattended station should warn early rather than report a health signal late.
+const BATT_LOW_MV: u16 = 3400;
 const REG_OP_MODE: u8 = 0x01;
 const REG_FRF_MSB: u8 = 0x06;
 const REG_FRF_MID: u8 = 0x07;
@@ -212,6 +219,7 @@ fn main() -> ! {
     let mut sequence: u16 = 0;
     let mut window = Window::new();
     let mut sub_samples: u32 = 0;
+    let mut sensor_seen_high = false;
     loop {
         if DEBUG_USB {
             if let (Some(dev), Some(ser)) = (usb_dev.as_mut(), serial.as_mut()) {
@@ -228,6 +236,11 @@ fn main() -> ! {
         });
         
         while !ALARM_FIRED.load(Ordering::Relaxed) {
+            // Latch "line read high" for the window: a fast wind can leave any
+            // single sample low, so sample on every pass and OR the results.
+            if anemometer_is_high() {
+                sensor_seen_high = true;
+            }
             if DEBUG_USB {
                 if let (Some(dev), Some(ser)) = (usb_dev.as_mut(), serial.as_mut()) {
                     dev.poll(&mut [ser]);
@@ -266,12 +279,30 @@ fn main() -> ! {
                 }
             }
 
+            let battery_mv: u16 = 3700;
+            let mut flags = 0u8;
+            if sensor_seen_high {
+                flags |= FLAG_SENSOR_OK;
+            }
+            if battery_mv < BATT_LOW_MV {
+                flags |= FLAG_BATT_LOW;
+            }
+            if sub_samples < SUB_SAMPLES_PER_WINDOW {
+                flags |= FLAG_WINDOW_TRUNCATED;
+            }
+            if DEBUG_USB {
+                if let Some(ser) = serial.as_mut() {
+                    print_u16(ser, b"flags=", flags as u16);
+                }
+            }
+
             let packet = build_packet(
                 (avg / 10) as u16,
                 (gust / 10) as u16,
                 (lull / 10) as u16,
-                3700,
+                battery_mv,
                 sequence,
+                flags,
             );
             radio_start_tx(&mut spi, &mut cs, &packet);
             // Wait for TxDone in 10 ms slices so usb_dev.poll() runs often
@@ -302,6 +333,7 @@ fn main() -> ! {
 
             window = Window::new();
             sub_samples = 0;
+            sensor_seen_high = false;
         }
     }
 }
@@ -344,6 +376,18 @@ fn read_register(spi: &mut impl SpiBus<u8>, cs: &mut impl OutputPin, address: u8
     let _ = spi.transfer_in_place(&mut buf);
     cs.set_high().unwrap();
     buf[1]
+}
+// The pulse line is pulled up and idles high, so a healthy line reads high
+// between pulses. A permanent low means a dead supply or a shorted line.
+fn anemometer_is_high() -> bool {
+    critical_section::with(|cs| {
+        ANEMOMETER
+            .borrow(cs)
+            .borrow_mut()
+            .as_mut()
+            .map(|pin| pin.is_high().unwrap_or(false))
+            .unwrap_or(false)
+    })
 }
 fn speed_cms(pulses: u32, window_ms: u32) -> u32 {
     let window_s = window_ms / 1000;
@@ -455,12 +499,13 @@ fn build_packet(
     lull_01: u16,
     battery_mv: u16,
     sequence: u16,
+    flags: u8,
     ) -> [u8; 18]{
     let mut p = [0u8; 18];
     p[0] = 0xAA;            // magic
     p[1] = PACKET_VERSION;  // 0x02
     p[2] = 1;               // node id
-    p[3] = 0;               // flags (unused for now)
+    p[3] = flags;           // bit0 sensor_ok, bit1 batt_low, bit2 window_truncated
     p[4] = (avg_01 >> 8) as u8; // wind_avg, big-endian
     p[5] = (avg_01 & 0xFF) as u8;
     p[6] = (gust_01 >> 8) as u8;
