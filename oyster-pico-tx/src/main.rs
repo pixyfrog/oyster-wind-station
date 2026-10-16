@@ -305,28 +305,31 @@ fn main() -> ! {
                 flags,
             );
             radio_start_tx(&mut spi, &mut cs, &packet);
-            // Wait for TxDone in 10 ms slices so usb_dev.poll() runs often
-            // enough to keep the USB stack enumerated. The total wait bound is
-            // unchanged: 50 slices x 10 ms = the old 500 ms, so a missed flag
-            // still cannot hang the station.
-            let mut waited_ms = 0u32;
-            while waited_ms < 500 {
-                if DEBUG_USB {
-                    if let (Some(dev), Some(ser)) = (usb_dev.as_mut(), serial.as_mut()) {
-                        dev.poll(&mut [ser]);
-                    }
-                }
-                delay.delay_ms(10);
-                waited_ms += 10;
-                if read_register(&mut spi, &mut cs, REG_IRQ_FLAGS) & IRQ_TX_DONE != 0 {
-                    break;
-                }
-            }
+            // Wait for TxDone in 10 ms slices (50 x 10 ms = the old 500 ms bound).
+            wait_bounded(&mut delay, &mut usb_dev, &mut serial, 500, 10, || {
+                read_register(&mut spi, &mut cs, REG_IRQ_FLAGS) & IRQ_TX_DONE != 0
+            });
             radio_tx_finish(&mut spi, &mut cs);
 
             if DEBUG_USB {
                 if let Some(ser) = serial.as_mut() {
                     print_u16(ser, b"TX seq=", sequence);
+                }
+            }
+
+            // Redundancy: resend the same packet with the same seq ~1 s later, so a
+            // single dropped frame does not lose the window. The gap is a bounded,
+            // USB-serviced wait, not a blocking delay.
+            wait_bounded(&mut delay, &mut usb_dev, &mut serial, 1000, 50, || false);
+            radio_start_tx(&mut spi, &mut cs, &packet);
+            wait_bounded(&mut delay, &mut usb_dev, &mut serial, 500, 10, || {
+                read_register(&mut spi, &mut cs, REG_IRQ_FLAGS) & IRQ_TX_DONE != 0
+            });
+            radio_tx_finish(&mut spi, &mut cs); // radio naps between windows
+
+            if DEBUG_USB {
+                if let Some(ser) = serial.as_mut() {
+                    print_u16(ser, b"TX2 seq=", sequence);
                 }
             }
             sequence = sequence.wrapping_add(1);
@@ -388,6 +391,36 @@ fn anemometer_is_high() -> bool {
             .map(|pin| pin.is_high().unwrap_or(false))
             .unwrap_or(false)
     })
+}
+// Bounded wait that keeps the USB stack serviced. Sleeps in short slices, up to
+// `total_ms`, polling USB between them and returning early once `done()` is true.
+// The slice count is fixed, so a missed hardware flag can never hang the station.
+// Every long-ish wait in this file goes through here, so USB servicing lives in
+// one place instead of being scattered.
+fn wait_bounded<B, P>(
+    delay: &mut cortex_m::delay::Delay,
+    usb_dev: &mut Option<UsbDevice<'_, B>>,
+    serial: &mut Option<SerialPort<'_, B>>,
+    total_ms: u32,
+    slice_ms: u32,
+    mut done: P,
+) where
+    B: UsbBus,
+    P: FnMut() -> bool,
+{
+    let mut waited_ms = 0u32;
+    while waited_ms < total_ms {
+        if DEBUG_USB {
+            if let (Some(dev), Some(ser)) = (usb_dev.as_mut(), serial.as_mut()) {
+                dev.poll(&mut [ser]);
+            }
+        }
+        delay.delay_ms(slice_ms);
+        waited_ms += slice_ms;
+        if done() {
+            break;
+        }
+    }
 }
 fn speed_cms(pulses: u32, window_ms: u32) -> u32 {
     let window_s = window_ms / 1000;
