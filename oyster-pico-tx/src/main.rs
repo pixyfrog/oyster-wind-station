@@ -21,7 +21,7 @@ use bsp::hal::adc::AdcPin;
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::SpiBus;
 use bsp::hal::fugit::ExtU32;
-use bsp::hal::timer::{Alarm, Alarm0, Alarm1, Timer};
+use bsp::hal::timer::{Alarm, Alarm0, Timer};
 
 use usb_device::{class_prelude::*, prelude::*};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
@@ -95,10 +95,6 @@ type AnemometerPin = Pin<Gpio22, FunctionSio<SioInput>, PullUp>;
 static ANEMOMETER: Mutex<RefCell<Option<AnemometerPin>>> = Mutex::new(RefCell::new(None));
 static ALARM: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
 static ALARM_FIRED: AtomicBool = AtomicBool::new(false);
-// Dedicated alarm for the ~1 s redundant-send gap, so waking wfi on it can
-// never be confused with the 3 s cadence alarm (ALARM_FIRED).
-static ALARM1: Mutex<RefCell<Option<Alarm1>>> = Mutex::new(RefCell::new(None));
-static GAP_FIRED: AtomicBool = AtomicBool::new(false);
 
 #[entry]
 fn main() -> ! {
@@ -207,10 +203,6 @@ fn main() -> ! {
     alarm.enable_interrupt();
     critical_section::with(|cs| ALARM.borrow(cs).replace(Some(alarm)));
     unsafe { pac::NVIC::unmask(pac::Interrupt::TIMER_IRQ_0) };
-    let mut gap_alarm = timer.alarm_1().unwrap();
-    gap_alarm.enable_interrupt();
-    critical_section::with(|cs| ALARM1.borrow(cs).replace(Some(gap_alarm)));
-    unsafe { pac::NVIC::unmask(pac::Interrupt::TIMER_IRQ_1) };
     // ---- USB serial (bench build only) ----
     // Skipping this entirely when DEBUG_USB = false is not just a current saving:
     // the field clock tree never starts PLL_USB, so clk_usb is stopped, and the
@@ -357,14 +349,10 @@ fn main() -> ! {
                 }
             }
 
-            // Redundancy: resend the same packet with the same seq ~1 s later.
-            // Bench: USB-serviced slices. Field: a bounded wfi woken by its own
-            // Alarm1, never by the 3 s cadence alarm.
-            if DEBUG_USB {
-                wait_bounded(&mut delay, &mut usb_dev, &mut serial, 1000, 50, || false);
-            } else {
-                gap_wait(&timer);
-            }
+            // Redundancy: resend the same packet with the same seq ~1 s later, so a
+            // single dropped frame does not lose the window. The gap is a bounded,
+            // USB-serviced wait, not a blocking delay.
+            wait_bounded(&mut delay, &mut usb_dev, &mut serial, 1000, 50, || false);
             radio_start_tx(&mut spi, &mut cs, &packet);
             wait_bounded(&mut delay, &mut usb_dev, &mut serial, 500, 10, || {
                 read_register(&mut spi, &mut cs, REG_IRQ_FLAGS) & IRQ_TX_DONE != 0
@@ -405,16 +393,6 @@ fn TIMER_IRQ_0() {
     });
     ALARM_FIRED.store(true, Ordering::Relaxed);
 }
-#[interrupt]
-fn TIMER_IRQ_1() {
-    critical_section::with(|cs| {
-        let mut slot = ALARM1.borrow(cs).borrow_mut();
-        if let Some(a) = slot.as_mut() {
-            a.clear_interrupt();
-        }
-    });
-    GAP_FIRED.store(true, Ordering::Relaxed);
-}
 // ---------------- radio drivers ----------------
 // `impl SpiBus<u8>` = "any type that fulfils the SpiBus contract".
 // You know traits as shared contracts — this just uses one as a
@@ -451,25 +429,6 @@ fn anemometer_is_high() -> bool {
 // The slice count is fixed, so a missed hardware flag can never hang the station.
 // Every long-ish wait in this file goes through here, so USB servicing lives in
 // one place instead of being scattered.
-// ~1 s gap between the two redundant sends (field build). Sleeps in wfi and is
-// woken by a dedicated Alarm1 at the deadline; Alarm0 (the 3 s cadence) is
-// separate, so its ALARM_FIRED can never end this wait. The free-running
-// counter is a hard bound in case of spurious wakes.
-fn gap_wait(timer: &Timer) {
-    let start = timer.get_counter_low();
-    critical_section::with(|cs| {
-        if let Some(a) = ALARM1.borrow(cs).borrow_mut().as_mut() {
-            let _ = a.schedule(1_000_000u32.micros());
-        }
-    });
-    while !GAP_FIRED.load(Ordering::Relaxed) {
-        cortex_m::asm::wfi();
-        if timer.get_counter_low().wrapping_sub(start) > 2_000_000 {
-            break;
-        }
-    }
-    GAP_FIRED.store(false, Ordering::Relaxed);
-}
 fn wait_bounded<B, P>(
     delay: &mut cortex_m::delay::Delay,
     usb_dev: &mut Option<UsbDevice<'_, B>>,
