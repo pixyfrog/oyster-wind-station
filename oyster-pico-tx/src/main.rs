@@ -40,11 +40,11 @@ const PACKET_VERSION: u8 = 0x02;
 // false = field build: no USB setup at all. The USB controller is left in
 //         reset, because with clk_usb stopped any access to its registers
 //         stalls the AHB and hangs the core before the radio is driven.
-const DEBUG_USB: bool = true;
+const DEBUG_USB: bool = false;
 // true  = full clock tree (PLL_SYS 125 MHz + PLL_USB 48 MHz).
 // false = crystal only, no PLLs — they are the dominant current cost.
-const USE_PLL_CLOCK: bool = true;
-const SUB_SAMPLES_PER_WINDOW: u32 = 6; // — 6 for bench, 200 for real (600 s / 3 s)
+const USE_PLL_CLOCK: bool = false;
+const SUB_SAMPLES_PER_WINDOW: u32 = 2; // — 6 for bench, 200 for real (600 s / 3 s)
 const WINDOW_S: u16 = (SUB_SAMPLES_PER_WINDOW * 3) as u16; // 3s per sub_sample
 const K_CM_PER_PULSE: u32 = 33; // calibrate on site
 const LORA_SF: u8 = 9; // frozen range is 7 .. 9
